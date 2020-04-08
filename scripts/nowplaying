@@ -8,7 +8,7 @@ DEBUG=1
 API_KEY="11353ee2e14240f46be72d71726f3f79"
 
 # mpd music directory
-MPD_MUSIC_DIRECTORY="/home/user/music"
+MPD_MUSIC_DIRECTORY="$HOME/music"
 
 function track_listen() {
 
@@ -62,13 +62,13 @@ function track_notify() {
 		if [ -z "$title" ] || [ -z "$artist" ] || [ -z "$album" ] || [ -z "$image" ]; then
 
 			# if old image exists then remove it
-			if [ -f /home/user/.cache/nowplaying.png ]; then
-				rm /home/user/.cache/nowplaying.png
+			if [ -f $HOME/.cache/nowplaying.png ]; then
+				rm $HOME/.cache/nowplaying.png
 			fi
 
 			# if old json data exists then remove it
-			if [ -f /home/user/.cache/nowplaying.json ]; then
-				rm /home/user/.cache/nowplaying.json
+			if [ -f $HOME/.cache/nowplaying.json ]; then
+				rm $HOME/.cache/nowplaying.json
 			fi
 
 			# create search string based on available data
@@ -89,7 +89,7 @@ function track_notify() {
 			json_url="https://ws.audioscrobbler.com/2.0/?method=track.getInfo&api_key=${API_KEY}&format=json${search_string}"
 
 			# download json data
-			curl -o /home/user/.cache/nowplaying.json -s $json_url
+			curl -o $HOME/.cache/nowplaying.json -s $json_url
 
 			# if no track title then get from json
 			if [ -z "$title" ]; then
@@ -110,8 +110,8 @@ function track_notify() {
 			if [ -z "$image" ]; then
 				image_url=$(jq '.track.album.image[2]."#text"' /home/user/.cache/nowplaying.json | tr -d '"')
 				if [ "$image_url" != "null" ]; then
-					curl -o /home/user/.cache/nowplaying.png -s $image_url
-					image="/home/user/.cache/nowplaying.png"
+					curl -o $HOME/.cache/nowplaying.png -s $image_url
+					image="$HOME/.cache/nowplaying.png"
 				else
 					image="nowplaying"
 				fi
