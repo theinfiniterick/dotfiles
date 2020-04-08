@@ -93,22 +93,22 @@ function track_notify() {
 
 			# if no track title then get from json
 			if [ -z "$title" ]; then
-				title=$(jq '.track.name' /home/user/.cache/nowplaying.json | tr -d '"')
+				title=$(jq '.track.name' $HOME/.cache/nowplaying.json | tr -d '"')
 			fi
 
 			# if no artist then get from json
 			if [ -z "$artist" ]; then
-				artist=$(jq '.track.artist.name' /home/user/.cache/nowplaying.json | tr -d '"')
+				artist=$(jq '.track.artist.name' $HOME/.cache/nowplaying.json | tr -d '"')
 			fi
 
 			# if no album then get from json
 			if [ -z "$album" ]; then
-				album=$(jq '.track.album.title' /home/user/.cache/nowplaying.json | tr -d '"')
+				album=$(jq '.track.album.title' $HOME/.cache/nowplaying.json | tr -d '"')
 			fi
 
 			# if no image then get image url from json and download
 			if [ -z "$image" ]; then
-				image_url=$(jq '.track.album.image[2]."#text"' /home/user/.cache/nowplaying.json | tr -d '"')
+				image_url=$(jq '.track.album.image[2]."#text"' $HOME/.cache/nowplaying.json | tr -d '"')
 				if [ "$image_url" != "null" ]; then
 					curl -o $HOME/.cache/nowplaying.png -s $image_url
 					image="$HOME/.cache/nowplaying.png"
