@@ -166,10 +166,6 @@ function track_notify() {
 
 }
 
-if [[ "$@" =~ "--debug" ]]; then
-	debug=1
-fi
-
 if [ "$1" = "--listen" ]; then
 	track_listen
 elif [ "$1" = "--notify" ]; then
