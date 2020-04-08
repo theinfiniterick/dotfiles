@@ -2,6 +2,8 @@
 
 # Dependencies: jq, libnotify
 
+DEBUG=1
+
 # last.fm api key
 API_KEY="11353ee2e14240f46be72d71726f3f79"
 
@@ -17,10 +19,10 @@ function track_listen() {
 
 		# if state is changed to 'playing'
 		if [ "$track_state" != "$prev_track_state" ] && [ "$track_state" = "playing"  ]; then
-			current_track --notify
+			track_notify
 		# else if track id changes
 		elif [ "$track_id" != "$prev_track_id" ]; then
-			current_track --notify
+			track_notify
 		fi
 
 		prev_track_state=$track_state
@@ -30,7 +32,7 @@ function track_listen() {
 
 }
 
-function current_track() {
+function track_notify() {
 
 	# gather track metadata
 	local track_data=`mpc current -f '[%title%]@!@[%artist%]@!@[%album%]@!@[%date%]@!@[%time%]@!@[%file%]'`
@@ -138,7 +140,7 @@ function current_track() {
 			message+=" <span foreground='#CCCCCC'>(</span>${date}<span foreground='#CCCCCC'>)</span>"
 		fi
 
-		if [ "$debug" = "1" ]; then
+		if [ "$DEBUG" = "1" ]; then
 			echo ""
 			echo "   track_data = $track_data"
 			echo ""
@@ -168,14 +170,8 @@ if [[ "$@" =~ "--debug" ]]; then
 	debug=1
 fi
 
-case $1 in
-	"listen"|"--listen")
-		track_listen
-		;;
-	"current"|"--current"|"-c"|"")
-		current_track $2
-		;;
-	"notify"|"--notify"|"-n")
-		current_track --notify $2
-		;;
-esac
+if [ "$1" = "--listen" ]; then
+	track_listen
+elif [ "$1" = "--notify" ]; then
+	track_notify
+fi
