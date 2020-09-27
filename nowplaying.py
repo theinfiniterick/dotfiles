@@ -51,9 +51,9 @@ class SongInfo:
         self.append_mpd_data(mpd_dict)
 
         if None in (self.title, self.artist, self.album):
-            self.append_filename_data()
+            self.append_filename_data(self.filename)
 
-        self.image_data = self.get_embedded_image_data()
+        self.image_data = self.get_embedded_image_data(self.path)
 
         if not self.image_data:
             self.image_path = self.get_local_image_path()
@@ -92,10 +92,10 @@ class SongInfo:
             logging.info(f"self.date = self.trim_date(mpd_dict['date']) = {self._clean_date_string(mpd_dict['date'])}")
             self.date = self._clean_date_string(mpd_dict['date'])
 
-    def _split_filename(self):
+    def _split_filename(self, filename):
 
         # strip extension from filename
-        string = os.path.splitext(self.filename)[0]
+        string = os.path.splitext(filename)[0]
 
         # declare patterns to be ignored while spliting the filename into sections
         ignore_patterns = [
@@ -124,9 +124,9 @@ class SongInfo:
 
         return cleaned_string_list
 
-    def _get_data_from_filename(self):
+    def _get_data_from_filename(self, filename):
 
-        unassigned_values = self._split_filename()
+        unassigned_values = self._split_filename(filename)
         unassigned_fields = ['artist', 'album', 'title']
         found_data = {}
 
@@ -153,9 +153,9 @@ class SongInfo:
 
         return found_data
 
-    def append_filename_data(self):
+    def append_filename_data(self, filename):
 
-        filename_dict = self._get_data_from_filename()
+        filename_dict = self._get_data_from_filename(filename)
 
         if not self.title and 'title' in filename_dict:
             logging.info(f"self.title = filename_dict['title'] = {filename_dict['title']}")
@@ -171,9 +171,9 @@ class SongInfo:
             self.date = None
 
     # ADD ALL IMAGE FORMATS AND HANDLE ALL IMAGE TAG TYPES
-    def get_embedded_image_data(self):
+    def get_embedded_image_data(self, path):
 
-        file = mutagen.File(self.path)
+        file = mutagen.File(path)
 
         self.mimetype = file.mime[0]
 
@@ -505,7 +505,7 @@ def get_notification_message(song):
 
 def generate_pixbuf_from_image(song):
 
-    if DEFAULT_IMAGE_PATH and not song.image_data and not song.image_path and not song.image_url:
+    if DEFAULT_IMAGE_PATH and os.path.exists(DEFAULT_IMAGE_PATH) and not song.image_data and not song.image_path and not song.image_url:
         song.image_path = DEFAULT_IMAGE_PATH
 
     if song.image_data:
