@@ -42,7 +42,10 @@ class SongInfo:
     def __init__(self, path=None, api_name='deezer', api_key=None):
 
         # set initial values for song properties to None
-        self.path = self.filename = self.folder = self.mimetype = self.api_name = self.api_key = self.title = self.artist = self.album = self.date = self.image_data = self.image_path = self.image_url = None
+        self.path = self.filename = self.folder = self.mimetype = \
+            self.api_name = self.api_key = self.title = self.artist = \
+            self.album = self.date = self.image_data = self.image_path = \
+            self.image_url = None
 
         # return None if path does not exist or is not a valid file
         if not path or not os.path.exists(path) or not os.path.isfile(path):
