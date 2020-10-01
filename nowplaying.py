@@ -7,7 +7,7 @@ import logging
 import mpd
 import mutagen
 import notify2
-import os.path
+import os
 import re
 import requests
 import signal
@@ -19,10 +19,11 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gio
 from gi.repository.GdkPixbuf import Pixbuf
 
-
 PROG = "nowplaying"
+
 LASTFM_API_KEY = "11353ee2e14240f46be72d71726f3f79"
-DEFAULT_IMAGE_PATH = '/home/user/images/icon/pacman/red.png'
+SPOTIFY_CLIENT_ID = "3ad71cf0ae544e7e935927e5d9a5cbad"
+SPOTIFY_CLIENT_SECRET = "862905d9380645a9ba29789308d795d5"
 
 MPD_BIND_ADDRESS = "127.0.0.1"
 MPD_BIND_PORT = 6600
@@ -30,6 +31,7 @@ MPD_PASSWORD = None
 MPD_TIMEOUT = None
 MPD_IDLE_TIMEOUT = None
 
+NOTIFY_DEFAULT_IMAGE = '/home/user/images/icon/pacman/red.png'
 NOTIFY_ID = 999999
 NOTIFY_TIMEOUT = 1500
 NOTIFY_URGENCY = 0
@@ -37,262 +39,26 @@ NOTIFY_URGENCY = 0
 
 class SongInfo:
 
-    def __init__(self, mpd_dict=None, api='lastfm', api_key=None, music_directory=None):
+    def __init__(self, path=None, api_name="deezer", api_key=None):
 
-        os.system('clear')
+        # set initial values for song properties to None
+        self.path = self.filename = self.folder = self.mimetype = self.api_name = self.api_key = self.title = self.artist = self.album = self.date = self.image_data = self.image_path = self.image_url = None
 
-        self.id = self.path = self.folder = self.filename = self.title = self.artist = \
-            self.album = self.date = self.image_data = self.image_path = self.image_url = None
-
-        self.api = api
-        self.api_key = api_key
-        self.music_directory = music_directory
-
-        self.append_mpd_data(mpd_dict)
-
-        if None in (self.title, self.artist, self.album):
-            self.append_filename_data(self.filename)
-
-        self.image_data = self.get_embedded_image_data(self.path)
-
-        if not self.image_data:
-            self.image_path = self.get_local_image_path()
-
-        if None in (self.title, self.artist, self.album) or (not self.image_data and not self.image_path):
-            self.append_data_from_api()
-
-    def _clean_date_string(self, date):
-
-        if re.match(r'^19\d{2}\D?.*$|^20\d{2}\D?.*$|^.*\D19\d{2}$|^.*\D20\d{2}$', date):
-            return dateutil.parser.parse(date).year
-        else:
-            return date
-
-    def append_mpd_data(self, mpd_dict):
-
-        self.id = mpd_dict['id']
-        self.path = os.path.join(self.music_directory, mpd_dict['file'])
-        self.folder = os.path.dirname(self.path)
-        self.filename = os.path.basename(self.path)
-        self.extension = self.filename.split('.')[-1]
-
-        if 'title' in mpd_dict:
-            logging.info(f"self.title = mpd_dict['title'] = {mpd_dict['title']}")
-            self.title = mpd_dict['title']
-
-        if 'album' in mpd_dict:
-            logging.info(f"self.album = mpd_dict['album'] = {mpd_dict['album']}")
-            self.album = mpd_dict['album']
-
-        if 'artist' in mpd_dict:
-            logging.info(f"self.artist = mpd_dict['artist'] = {mpd_dict['artist']}")
-            self.artist = mpd_dict['artist']
-
-        if 'date' in mpd_dict:
-            logging.info(f"self.date = self.trim_date(mpd_dict['date']) = {self._clean_date_string(mpd_dict['date'])}")
-            self.date = self._clean_date_string(mpd_dict['date'])
-
-    def _split_filename(self, filename):
-
-        # strip extension from filename
-        string = os.path.splitext(filename)[0]
-
-        # declare patterns to be ignored while spliting the filename into sections
-        ignore_patterns = [
-            {'initial_value': 'Mr. ', 'replace_value': '((MISTERDOT))'},
-            {'initial_value': 'Mrs. ', 'replace_value': '((MISSESDOT))'},
-            {'initial_value': 'Dr. ', 'replace_value': '((DOCTORDOT))'},
-            {'initial_value': 'Jr. ', 'replace_value': '((JUNIORDOT))'},
-            {'initial_value': 'Sr. ', 'replace_value': '((SENIORDOT))'},
-            {'initial_value': 'Vol. ', 'replace_value': '((VOLDOT))'},
-            {'initial_value': 'Ep. ', 'replace_value': '((EPDOT))'}
-        ]
-
-        # replace all patterns to be ignored in string with replacement patterns that will not cause a split
-        for i in range(len(ignore_patterns)):
-            string = string.replace(ignore_patterns[i]['initial_value'], ignore_patterns[i]['replace_value'])
-
-        # split sections into list
-        string_list = re.split('\\s?\\.\\s+|\\s?-\\s+|\\s+-\\s?', string)
-
-        # replace all replacement patterns in chunks with original patterns
-        cleaned_string_list = []
-        for var in string_list:
-            for i in range(len(ignore_patterns)):
-                var = var.replace(ignore_patterns[i]['replace_value'], ignore_patterns[i]['initial_value'])
-            cleaned_string_list.append(var.strip())
-
-        return cleaned_string_list
-
-    def _get_data_from_filename(self, filename):
-
-        unassigned_values = self._split_filename(filename)
-        unassigned_fields = ['artist', 'album', 'title']
-        found_data = {}
-
-        # if track in unassigned_values then check all values for a track number and assign it
-        for val in unassigned_values:
-            if re.match(r'^\d{1,2}$', val):
-                unassigned_values.remove(val)
-                break
-
-        if 'album' in unassigned_fields and len(unassigned_fields) > len(unassigned_values):
-            unassigned_fields.remove('album')
-
-        elif len(unassigned_values) > len(unassigned_fields):
-
-            # while more unassigned_fields than unassigned_values remove first item in unassigned_fields
-            while len(unassigned_values) > len(unassigned_fields):
-                del unassigned_values[0]
-
-        # assign remaining unassigned_values to remaining unassigned_fields
-        for i in range(len(unassigned_values) - 1, -1, -1):
-            found_data[unassigned_fields[-1]] = unassigned_values[-1]
-            unassigned_fields.remove(unassigned_fields[-1])
-            unassigned_values.remove(unassigned_values[-1])
-
-        return found_data
-
-    def append_filename_data(self, filename):
-
-        filename_dict = self._get_data_from_filename(filename)
-
-        if not self.title and 'title' in filename_dict:
-            logging.info(f"self.title = filename_dict['title'] = {filename_dict['title']}")
-            self.title = filename_dict['title']
-
-        if not self.artist and 'artist' in filename_dict:
-            logging.info(f"self.artist = filename_dict['artist'] = {filename_dict['artist']}")
-            self.artist = filename_dict['artist']
-
-        if not self.album and 'album' in filename_dict:
-            logging.info(f"self.album = filename_dict['album'] = {filename_dict['album']}")
-            self.album = filename_dict['album']
-            self.date = None
-
-    # ADD ALL IMAGE FORMATS AND HANDLE ALL IMAGE TAG TYPES
-    def get_embedded_image_data(self, path):
-
-        file = mutagen.File(path)
-
-        self.mimetype = file.mime[0]
-
-        if file and len(file.tags.values()) > 0:
-
-            if self.mimetype == "audio/mp4":
-
-                if 'covr' in file.tags.keys():
-                    logging.info(f"self.image_data = file.tags['covr'][0]")
-                    return file.tags['covr'][0]
-
-            elif self.mimetype == "audio/mp3":
-
-                for tag in file.tags.values():
-                    if tag.FrameID == 'APIC' and tag.type == 3:
-                        logging.info(f"self.image_data = tag.data")
-                        return tag.data
-
-                for tag in file.tags.values():
-                    if tag.FrameID == 'APIC' and tag.type == 0:
-                        logging.info(f"self.image_data = tag.data")
-                        return tag.data
-
-            elif self.mimetype == "audio/flac":
-
-                for tag in file.pictures:
-                    if tag.type == 3:
-                        logging.info(f"self.image_data = tag.data")
-                        return tag.data
-
-    def _get_folder_image(self, folder):
-
-        filenames = ["cover", "Cover", "front", "Front", "folder", "Folder", "thumb", "Thumb", "album", "Album", "albumart", "AlbumArt", "albumartsmall", "AlbumArtSmall"]
-        extensions = ["png", "jpg", "jpeg", "gif", "svg", "bmp", "tif", "tiff"]
-
-        # check for the existence of a file in current folder that macthes a combination of filenames and extensions
-        for name in filenames:
-            for ext in extensions:
-                path = folder + '/' + name + '.' + ext
-                logging.debug(f"look for image = {path}")
-                if os.path.exists(path):
-                    return path
-
-    def get_local_image_path(self):
-
-        matching_folder_names = [r'^disc\s?\d+.*$', r'^cd\s?\d+.*$', r'^dvd\s?\d+.*$', r'^set\s?\d+.*$']
-
-        # if self.extension exists then append it to matching_folder_names
-        if self.extension:
-            matching_folder_names.append(self.extension.lower())
-
-        # if self.artist exists then append it to matching_folder_names
-        if self.artist:
-            matching_folder_names.append(self.artist.replace("/", "_").lower())
-
-        # if self.album exists then append it to matching_folder_names
-        if self.album:
-            matching_folder_names.append(r'^.*' + self.album.replace("/", "_").lower() + '$')
-
-        # set initial value of current folder to the directory of the audio file
-        current_folder = self.folder
-        current_folder_name = os.path.basename(current_folder)
-
-        # append initial folder to matching_folder_names
-        if current_folder_name not in matching_folder_names:
-            matching_folder_names.append(os.path.basename(current_folder))
-
-        logging.debug("\n" + str(matching_folder_names) + "\n")
-
-        # while current_folder_name matches a folder in matching_folder_names and current folder is not "/" or self.music_directory
-        while re.match("|".join(matching_folder_names), current_folder_name.lower()) and current_folder not in ("/", self.music_directory):
-
-            # check current_folder for image
-            # print(f"check folder = {current_folder}")
-            image_path = self._get_folder_image(current_folder)
-
-            # if an image_path was found then return it
-            if image_path:
-                logging.info(f"self.image_path = self.get_local_image_path() = {image_path}")
-                return image_path
-
-            # set current_folder to its parent folder
-            current_folder = os.path.abspath(os.path.join(current_folder, os.pardir))
-            current_folder_name = os.path.basename(current_folder)
-
-    def _query_api(self, payload):
-
-        headers = {'user-agent': 'Dataquest'}
-
-        if self.api == "lastfm":
-            payload['api_key'] = self.api_key
-            payload['format'] = 'json'
-            url = "http://ws.audioscrobbler.com/2.0/"
-        elif self.api == "deezer":
-            url = "http://api.deezer.com/search/autocomplete"
-
-        try:
-            response = requests.get(url, headers=headers, params=payload)
-            return response.json()
-        except requests.exceptions.ConnectionError:
+        # return None if path does not exist or is not a valid file
+        if not path or not os.path.exists(path) or not os.path.isfile(path):
+            print("error: file not found.")
             return None
 
-    def _dict_keys_exist(self, element, *keys):
+        self.api_name = api_name
+        self.api_key = api_key
 
-        if not isinstance(element, dict):
-            raise AttributeError('keys_exists() expects dict as first argument.')
+        self.path = path
+        self.filename = os.path.basename(path)
+        self.folder = os.path.dirname(path)
 
-        if len(keys) == 0:
-            raise AttributeError('keys_exists() expects at least two arguments, one given.')
+        self.gather_properties()
 
-        for key in keys:
-            try:
-                element = element[key]
-            except KeyError:
-                return False
-
-        return True
-
-    def _clean_album_name_string(self, name):
+    def clean_album_string(self, name):
 
         # remove unwanted strings from album name
         album_remove_strings = [
@@ -315,110 +81,494 @@ class SongInfo:
 
         return name
 
-    def _request_album_data(self):
+    def clean_date_string(self, date):
 
-        if self.api == "lastfm":
+        if date:
+            if re.match(r'^19\d{2}\D?.*$|^20\d{2}\D?.*$|^.*\D19\d{2}$|^.*\D20\d{2}$', date):
+                return dateutil.parser.parse(date).year
+            else:
+                return date
+        else:
+            return ""
 
-            api_payload = {'method': 'album.getInfo', 'artist': self.artist, 'album': self.album}
-            results = self._query_api(api_payload)
+    def gather_properties(self):
+        """
+        Assign song properties to object from metadata, filename,
+        embedded image data, local album cover images and api data.
+        """
 
-            if "error" in results:
-                return {"found": False}
+        mutagen_object = mutagen.File(self.path)
 
-            expected_keys = ['album', 'image', 2, '#text']
-            if self._dict_keys_exist(results, *expected_keys) and results['album']['image'][2]['#text'] != "":
-                return {'found': True, 'image_url': results['album']['image'][2]['#text']}
+        if mutagen_object != {}:
 
-        elif self.api == "deezer":
+            self.mimetype = mutagen_object.mime[0]
+            metadata_dict = self.get_metadata(mutagen_object)
 
-            api_payload = {'q': self.artist + "%20" + self.album}
-            print("api_payload = " + api_payload['q'])
-            results = self.query_api(api_payload)
+            if 'title' in metadata_dict:
+                print(f"self.title = metadata_dict['title'] = {metadata_dict['title']}")
+                self.title = metadata_dict['title']
+            if 'artist' in metadata_dict:
+                print(f"self.artist = metadata_dict['artist'] = {metadata_dict['artist']}")
+                self.artist = metadata_dict['artist']
+            if 'album' in metadata_dict:
+                print(f"self.album = metadata_dict['album'] = {metadata_dict['album']}")
+                self.album = self.clean_album_string(metadata_dict['album'])
+            if 'date' in metadata_dict:
+                print(f"self.date = metadata_dict['date'] = {metadata_dict['date']}")
+                self.date = self.clean_date_string(metadata_dict['date'])
 
-            if len(results['tracks']['data']) == 0:
-                return {'found': False}
+        if None in (self.title, self.artist, self.album):
 
-            expected_keys = ['albums', 'data', 0, 'cover_medium']
-            if self._dict_keys_exist(results, *expected_keys) and results['albums']['data'][0]['cover_medium'] != "":
+            filename_dict = self.get_filename_data()
 
-                print("image = " + results['albums']['data'][0]['cover_medium'])
-                return {'found': True, 'image_url': results['albums']['data'][0]['cover_medium']}
+            if not self.title and 'title' in filename_dict:
+                print(f"self.title = filename_dict['title'] = {filename_dict['title']}")
+                self.title = filename_dict['title']
+            if not self.artist and 'artist' in filename_dict:
+                print(f"self.artist = filename_dict['artist'] = {filename_dict['artist']}")
+                self.artist = filename_dict['artist']
+            if not self.album and 'album' in filename_dict:
+                print(f"self.album = filename_dict['album'] = {filename_dict['album']}")
+                self.album = self.clean_album_string(filename_dict['album'])
 
-    def _request_track_data(self):
+        self.image_data = self.get_embedded_image_data(mutagen_object)
+        if self.image_data:
+            print("self.image_data = data")
 
-        album = image_url = track = None
+        if not self.image_data:
 
-        if self.api == "lastfm":
+            self.image_path = self.get_local_image_path()
 
-            api_payload = {'method': 'track.getInfo', 'artist': self.artist, 'track': self.title}
-            results = self._query_api(api_payload)
+            if self.image_path:
+                print(f"self.image_path = {self.image_path}")
 
-            if "error" in results or "track" not in results or "album" not in results["track"]:
-                logging.info("===== NOT FOUND ===== self._request_track_data ===== NOT FOUND =====")
-                return {"found": False}
+        if self.artist and self.album and not self.image_data and not self.image_path:
 
-            expected_keys = ['track', 'album', 'title']
-            if self._dict_keys_exist(results, *expected_keys) and results['track']['album']['title'] != "":
-                album = results['track']['album']['title']
+            api_dict = None
 
-            expected_keys = ['track', 'album', 'image', 2, '#text']
-            if self._dict_keys_exist(results, *expected_keys) and results['track']['album']['image'][2]['#text'] != "":
-                image_url = results['track']['album']['image'][2]['#text']
+            if self.api_name == "deezer":
+                api_dict = self.get_deezer_album_data()
+            elif self.api_name == "lastfm" and self.api_key:
+                api_dict = self.get_lastfm_album_data()
+            elif self.api_name == "spotify" and self.api_key:
+                api_dict = self.get_spotify_album_data()
 
-        elif self.api == "deezer":
+            print("api_dict = " + str(api_dict))
 
-            api_payload = {'q': self.artist + "%20" + self.title}
-            results = self._query_api(api_payload)
+            if api_dict:
+                if 'album' in api_dict:
+                    print(f"self.album = api_dict['album'] = {api_dict['album']}")
+                    self.album = self.clean_album_string(api_dict['album'])
+                if 'date' in api_dict:
+                    print(f"self.date = api_dict['date'] = {api_dict['date']}")
+                    self.date = self.clean_date_string(api_dict['date'])
+                if 'image_url' in api_dict:
+                    print(f"self.image_url = api_dict['image_url'] = {api_dict['image_url']}")
+                    self.image_url = api_dict['image_url']
 
-            if "tracks" not in results or "data" not in results["tracks"] or len(results['tracks']['data']) == 0:
-                logging.info("===== NOT FOUND ===== self._request_track_data ===== NOT FOUND =====")
-                return {'found': False}
+        elif self.artist and self.title and (not self.album or (not self.image_data and not self.image_path)):
 
-            # locate album_index for first album name not containing an unwanted substring
-            album_index = 0  # set default value in case no album_index is chosen
+            api_dict = None
+
+            if self.api_name == "deezer":
+                api_dict = self.get_deezer_track_data()
+            elif self.api_name == "lastfm" and self.api_key:
+                api_dict = self.get_lastfm_track_data()
+            elif self.api_name == "spotify" and self.api_key:
+                api_dict = self.get_spotify_track_data()
+
+            if api_dict:
+                if 'album' in api_dict:
+                    print(f"self.album = api_dict['album'] = {api_dict['album']}")
+                    self.album = api_dict['album']
+                if 'date' in api_dict:
+                    print(f"self.date = api_dict['date'] = {api_dict['date']}")
+                    self.date = self.clean_date_string(api_dict['date'])
+                if 'image_url' in api_dict:
+                    print(f"self.image_url = api_dict['image_url'] = {api_dict['image_url']}")
+                    self.image_url = api_dict['image_url']
+
+    def get_metadata(self, mutagen_object):
+        """
+        Returns a dictionary (title, artist, album and date) parsed from mutagen metadata
+        """
+
+        metadata_dict = {}
+
+        # create a dictionary of tag keys to extract
+        if mutagen_object.mime[0] == "audio/mp3":
+            metadata_keys = {'TIT2': 'title', 'TPE1': 'artist', 'TPE2': 'albumartist', 'TALB': 'album', 'TDRC': 'date'}
+        elif mutagen_object.mime[0] == "audio/mp4":
+            metadata_keys = {'©nam': 'title', '©ART': 'artist', 'aART': 'albumartist', '©alb': 'album', '©day': 'date'}
+        elif mutagen_object.mime[0] == "audio/flac":
+            metadata_keys = {'title': 'title', 'artist': 'artist', 'albumartist': 'albumartist', 'album': 'album', 'date': 'date'}
+        else:
+            metadata_keys = None
+
+        # find and assign wanted keys from metadata
+        if metadata_keys and len(mutagen_object.tags) > 0:
+            for key in mutagen_object.tags.keys():
+                if key in metadata_keys:
+                    metadata_dict[metadata_keys[key]] = mutagen_object.tags.get(key)[0]
+
+            if 'date' in metadata_dict:
+                metadata_dict['date'] = metadata_dict['date']
+
+            # return metadata dictionary
+            return metadata_dict
+
+    def split_filename(self, filename):
+        """
+        Returns a list of values by splitting filename at delimiters.
+        """
+
+        # get filename without extension
+        string = os.path.splitext(filename)[0]
+
+        # dictionary of patterns to protect from split
+        ignore_patterns = [
+            {'initial_value': 'Mr. ', 'replace_value': '((MISTERDOT))'},
+            {'initial_value': 'Mrs. ', 'replace_value': '((MISSESDOT))'},
+            {'initial_value': 'Dr. ', 'replace_value': '((DOCTORDOT))'},
+            {'initial_value': 'Jr. ', 'replace_value': '((JUNIORDOT))'},
+            {'initial_value': 'Sr. ', 'replace_value': '((SENIORDOT))'},
+            {'initial_value': 'Vol. ', 'replace_value': '((VOLDOT))'},
+            {'initial_value': 'Ep. ', 'replace_value': '((EPDOT))'}
+        ]
+
+        # temporarily replace protected patterns so they do not affect the split
+        for i in range(len(ignore_patterns)):
+            string = string.replace(ignore_patterns[i]['initial_value'], ignore_patterns[i]['replace_value'])
+
+        # split sections into a list
+        string_list = re.split('\\s?\\.\\s+|\\s?-\\s+|\\s+-\\s?', string)
+
+        # replace all protected patterns with their original values
+        cleaned_string_list = []
+        for var in string_list:
+            for i in range(len(ignore_patterns)):
+                var = var.replace(ignore_patterns[i]['replace_value'], ignore_patterns[i]['initial_value'])
+            cleaned_string_list.append(var.strip())
+
+        return cleaned_string_list
+
+    def get_filename_data(self):
+        """
+        Returns a dictionary of data parsed from the filename.
+        Fields are title, album and artist.
+        """
+
+        unassigned_values = self.split_filename(self.filename)
+        unassigned_fields = ['artist', 'album', 'title']
+        found_data = {}
+
+        # remove any track numbers from unassigned_values
+        for val in unassigned_values:
+            if re.match(r'^\d{1,2}$', val):
+                unassigned_values.remove(val)
+                break
+
+        # if there are more unassigned fields than unassigned values and album is in unassiged fields then remove it
+        if 'album' in unassigned_fields and len(unassigned_fields) > len(unassigned_values):
+            unassigned_fields.remove('album')
+
+        # if there are still more unassigned values than unassigned fields
+        if len(unassigned_values) > len(unassigned_fields):
+
+            # remove first unassigned value until there are the same number of unassigned values and unassigned fields
+            while len(unassigned_values) > len(unassigned_fields):
+                del unassigned_values[0]
+
+        # assign remaining unassigned_values to remaining unassigned_fields
+        for i in range(len(unassigned_values)):
+            found_data[unassigned_fields[-1]] = unassigned_values[-1]
+            unassigned_fields.remove(unassigned_fields[-1])
+            unassigned_values.remove(unassigned_values[-1])
+
+        return found_data
+
+    def get_embedded_image_data(self, mutagen_object):
+        """
+        Returns embedded image data from specified audio file path.
+        """
+
+        if mutagen_object and mutagen_object.tags and len(mutagen_object.tags.values()) > 0:
+            if mutagen_object.mime[0] == "audio/mp3":
+                for tag in mutagen_object.tags.values():
+                    if tag.FrameID == 'APIC' and tag.type == 3:
+                        return tag.data
+            elif mutagen_object.mime[0] == "audio/mp4":
+                if 'covr' in mutagen_object.tags.keys():
+                    return mutagen_object.tags['covr'][0]
+            elif mutagen_object.mime[0] == "audio/flac":
+                for tag in mutagen_object.pictures:
+                    if tag.type == 3:
+                        return tag.data
+
+    def get_folder_image(self, folder):
+
+        filenames = ["cover", "Cover", "front", "Front", "folder", "Folder", "thumb", "Thumb", "album", "Album", "albumart", "AlbumArt", "albumartsmall", "AlbumArtSmall"]
+        extensions = ["png", "jpg", "jpeg", "gif", "svg", "bmp", "tif", "tiff"]
+
+        # check for the existence of a file in current folder that macthes a combination of filenames and extensions
+        for name in filenames:
+            for ext in extensions:
+                path = folder + '/' + name + '.' + ext
+                if os.path.exists(path):
+                    return path
+
+    def get_local_image_path(self):
+
+        song_file_extension = self.filename.split('.')[-1]
+        song_folder = os.path.dirname(self.path)
+
+        matching_folder_names = [r'^disc\s?\d+.*$', r'^cd\s?\d+.*$', r'^dvd\s?\d+.*$', r'^set\s?\d+.*$']
+
+        # if self.extension exists then append it to matching_folder_names
+        if song_file_extension:
+            matching_folder_names.append(song_file_extension.lower())
+
+        # if self.artist exists then append it to matching_folder_names
+        if self.artist:
+            matching_folder_names.append(self.artist.replace("/", "_").lower())
+
+        # if self.album exists then append it to matching_folder_names
+        if self.album:
+            matching_folder_names.append(r'^.*' + self.album.replace("/", "_").lower() + '$')
+
+        # set initial value of current folder to the directory of the audio file
+        current_folder = song_folder
+        current_folder_name = os.path.basename(current_folder)
+
+        # append initial folder to matching_folder_names
+        if current_folder_name not in matching_folder_names:
+            matching_folder_names.append(os.path.basename(current_folder))
+
+        # while current_folder_name matches a folder in matching_folder_names and current folder is not "/" or self.music_directory
+        while re.match("|".join(matching_folder_names), current_folder_name.lower()) and current_folder != "/":
+
+            # check current_folder for image
+            # print(f"check folder = {current_folder}")
+            image_path = self.get_folder_image(current_folder)
+
+            # if an image_path was found then return it
+            if image_path:
+                return image_path
+
+            # set current_folder to its parent folder
+            current_folder = os.path.abspath(os.path.join(current_folder, os.pardir))
+            current_folder_name = os.path.basename(current_folder)
+
+    def dict_keys_exist(self, element, *keys):
+
+        if not isinstance(element, dict):
+            raise AttributeError('keys_exists() expects dict as first argument.')
+
+        if len(keys) == 0:
+            raise AttributeError('keys_exists() expects at least two arguments, one given.')
+
+        for key in keys:
+            try:
+                element = element[key]
+            except KeyError:
+                return False
+
+        return True
+
+    def get_spotify_album_data(self):
+
+        if not self.api_key:
+            self.api_key = get_spotify_access_token()
+
+        headers = {'Authorization': f'Bearer {self.api_key}'}
+        query_string = f'https://api.spotify.com/v1/search?q=album:{self.album}%20artist:{self.artist}&type=album'
+
+        try:
+            response = requests.get(query_string, headers=headers)
+            results = response.json()
+        except requests.exceptions.ConnectionError:
+            return {}
+
+        expected_keys = ['albums', 'items']
+        if self.dict_keys_exist(results, *expected_keys):
+
             unwanted_substrings = ["best of", "greatest hits", "collection", "b-sides"]
+
+            for index in range(0, len(results['albums']['items'])):
+
+                artist = results['albums']['items'][index]['artists'][0]['name']
+                album = results['albums']['items'][index]['name']
+                album_type = results['albums']['items'][index]['type']
+                date = results['albums']['items'][index]['release_date']
+                image_url = results['albums']['items'][index]['images'][0]['url']
+
+                if album_type == "album" and image_url != "" and not any([substring in album.lower() for substring in unwanted_substrings]):
+                    return {
+                        'artist': artist,
+                        'album': album,
+                        'date': date,
+                        'image_url': image_url
+                    }
+
+        return {}
+
+    def get_spotify_track_data(self):
+
+        if not self.api_key:
+            self.api_key = get_spotify_access_token()
+
+        headers = {'Authorization': f'Bearer {self.api_key}'}
+        query_string = f'https://api.spotify.com/v1/search?q=track:{self.title}%20artist:{self.artist}&type=track'
+
+        try:
+            response = requests.get(query_string, headers=headers)
+            results = response.json()
+        except requests.exceptions.ConnectionError:
+            return {}
+
+        expected_keys = ['tracks', 'items']
+        if self.dict_keys_exist(results, *expected_keys):
+
+            unwanted_substrings = ["best of", "greatest hits", "collection", "b-sides"]
+
+            for index in range(0, len(results['tracks']['items'])):
+
+                artist = results['tracks']['items'][0]['album']['artists'][0]['name']
+                album = results['tracks']['items'][0]['album']['name']
+                album_type = results['tracks']['items'][0]['album']['album_type']
+                image_url = results['tracks']['items'][0]['album']['images'][0]['url']
+                date = results['tracks']['items'][0]['album']['release_date']
+
+                if album_type == "album" and image_url != "" and not any([substring in album.lower() for substring in unwanted_substrings]):
+                    return {
+                        'artist': artist,
+                        'album': album,
+                        'date': date,
+                        'image_url': image_url
+                    }
+
+        return {}
+
+    def get_deezer_album_data(self):
+
+        headers = {'user-agent': 'Dataquest'}
+        payload = {'q': self.artist + "%20" + self.album}
+
+        try:
+            response = requests.get("http://api.deezer.com/search/autocomplete", headers=headers, params=payload)
+            results = response.json()
+        except requests.exceptions.ConnectionError:
+            return {}
+
+        expected_keys = ['albums', 'data', 0, 'title']
+        if self.dict_keys_exist(results, *expected_keys):
+
+            unwanted_substrings = ["best of", "greatest hits", "collection", "b-sides"]
+
+            for index in range(0, len(results['albums']['data'])):
+
+                artist = results['albums']['data'][index]['artist']['name']
+                album = results['albums']['data'][index]['title']
+                album_type = results['albums']['data'][index]['record_type']
+                image_url = results['albums']['data'][index]['cover_medium']
+
+                if album_type == "album" and image_url != "" and not any([substring in album.lower() for substring in unwanted_substrings]):
+                    return {
+                        'artist': artist,
+                        'album': album,
+                        'date': None,
+                        'image_url': image_url
+                    }
+
+        return {}
+
+    def get_deezer_track_data(self):
+
+        headers = {'user-agent': 'Dataquest'}
+        payload = {'q': self.artist + "%20" + self.title}
+
+        try:
+            response = requests.get("http://api.deezer.com/search/autocomplete", headers=headers, params=payload)
+            results = response.json()
+        except requests.exceptions.ConnectionError:
+            return {}
+
+        expected_keys = ['tracks', 'data', 0, 'title']
+        if self.dict_keys_exist(results, *expected_keys):
+
+            unwanted_substrings = ["best of", "greatest hits", "collection", "b-sides"]
+
             for index in range(0, len(results['tracks']['data'])):
-                string = results['tracks']['data'][index]['album']['title']
-                if not any([substring in string.lower() for substring in unwanted_substrings]):
-                    album_index = index
-                    break
 
-            expected_keys = ['tracks', 'data', album_index, 'album', 'title']
-            if self._dict_keys_exist(results, *expected_keys) and results['tracks']['data'][album_index]['album']['title'] != "":
-                album = results['tracks']['data'][album_index]['album']['title']
-                album = self._clean_album_name_string(album)
+                artist = results['tracks']['data'][index]['artist']['name']
+                album = results['tracks']['data'][index]['album']['title']
+                album_type = results['tracks']['data'][index]['album']['type']
+                image_url = results['tracks']['data'][index]['album']['cover_medium']
 
-            expected_keys = ['tracks', 'data', album_index, 'album', 'cover_medium']
-            if self._dict_keys_exist(results, *expected_keys) and results['tracks']['data'][album_index]['album']['cover_medium'] != "":
-                image_url = results['tracks']['data'][album_index]['album']['cover_medium']
+                if album_type == "album" and image_url != "" and not any([substring in album.lower() for substring in unwanted_substrings]):
+                    return {
+                        'artist': artist,
+                        'album': album,
+                        'date': None,
+                        'image_url': image_url
+                    }
 
-        return {'found': True, 'album': album, 'image_url': image_url}
+        return {}
 
-    def append_data_from_api(self):
+    def get_lastfm_album_data(self):
 
-        if self.api == "lastfm" and not self.api_key:
-            return
+        headers = {'user-agent': 'Dataquest'}
+        payload = {'api_key': '11353ee2e14240f46be72d71726f3f79', 'format': 'json', 'method': 'album.getInfo', 'artist': self.artist, 'album': self.album}
 
-        if self.album and self.artist and not self.image_data and not self.image_path:
+        try:
+            response = requests.get("http://ws.audioscrobbler.com/2.0/", headers=headers, params=payload)
+            results = response.json()
+        except requests.exceptions.ConnectionError:
+            return {}
 
-            request_dict = self._request_album_data()
+        expected_keys = ['album', 'name']
+        if self.dict_keys_exist(results, *expected_keys):
 
-            if request_dict['found']:
-                self.image_url = request_dict['image_url']
+            return {
+                'artist': results['album']['artist'],
+                'album': results['album']['name'],
+                'date': None,
+                'image_url': results['album']['image'][2]['#text']
+            }
 
-        elif self.title and self.artist and (not self.album or (not self.image_data and not self.image_path and not self.image_url)):
+        return {}
 
-            request_dict = self._request_track_data()
+    def get_lastfm_track_data(self):
 
-            if request_dict['found']:
+        headers = {'user-agent': 'Dataquest'}
+        payload = {'api_key': '11353ee2e14240f46be72d71726f3f79', 'format': 'json', 'method': 'track.getInfo', 'artist': self.artist, 'track': self.title}
 
-                if bool(request_dict['album']):
-                    logging.info(f"self.album = request_dict['album'] = {request_dict['album']}")
-                    self.album = request_dict['album']
+        try:
+            response = requests.get("http://ws.audioscrobbler.com/2.0/", headers=headers, params=payload)
+            results = response.json()
+        except requests.exceptions.ConnectionError:
+            return {}
 
-                if bool(request_dict['image_url']):
-                    logging.info(f"self.image_url = request_dict['image_url'] = {request_dict['image_url']}")
-                    self.image_url = request_dict['image_url']
+        expected_keys = ['track', 'album', 'title']
+        if self.dict_keys_exist(results, *expected_keys):
+
+            return {
+                'artist': results['track']['artist']['name'],
+                'album': results['track']['album']['title'],
+                'date': None,
+                'image_url': results['track']['album']['image'][2]['#text']
+            }
+
+        return {}
+
+
+def get_arguments():
+
+    parser = argparse.ArgumentParser(prog=PROG, usage="%(prog)s [options]", description="Send notification from current MPD track.", prefix_chars='-')
+    parser.add_argument("--api", "-a", type=str, default="spotify", help="Specify an api")
+    parser.add_argument("--once", "-o", action="store_true", default=False, help="Send one notification and exit")
+
+    return parser.parse_args()
 
 
 def get_mpd_config_path():
@@ -440,15 +590,6 @@ def get_music_directory():
             line_list = line.strip().split()
             if len(line_list) == 2:
                 return os.path.expanduser(line_list[-1].strip("\""))
-
-
-def get_arguments():
-
-    parser = argparse.ArgumentParser(prog=PROG, usage="%(prog)s [options]", description="Send notification from current MPD track.", prefix_chars='-')
-    parser.add_argument("--api", "-a", type=str, default="lastfm", help="Specify an api")
-    parser.add_argument("--once", "-o", action="store_true", default=False, help="Send one notification and exit")
-
-    return parser.parse_args()
 
 
 def mpd_open_connection(address, port, password=None, timeout=None, idle_timeout=None):
@@ -505,24 +646,20 @@ def get_notification_message(song):
 
 def generate_pixbuf_from_image(song):
 
-    if DEFAULT_IMAGE_PATH and os.path.exists(DEFAULT_IMAGE_PATH) and not song.image_data and not song.image_path and not song.image_url:
-        song.image_path = DEFAULT_IMAGE_PATH
+    if NOTIFY_DEFAULT_IMAGE and os.path.exists(NOTIFY_DEFAULT_IMAGE) and not song.image_data and not song.image_path and not song.image_url:
+        song.image_path = NOTIFY_DEFAULT_IMAGE
 
     if song.image_data:
-
         input_stream = Gio.MemoryInputStream.new_from_data(song.image_data, None)
         return Pixbuf.new_from_stream(input_stream, None)
-
     elif song.image_path:
-
         return Pixbuf.new_from_file(song.image_path)
-
     elif song.image_url:
 
         try:
             response = urllib.request.urlopen(song.image_url)
         except urllib.error.HTTPError:
-            pass
+            return None
         else:
             input_stream = Gio.MemoryInputStream.new_from_data(response.read(), None)
             return Pixbuf.new_from_stream(input_stream, None)
@@ -553,15 +690,39 @@ def send_notification(song):
         print("dbus failed to send")
 
 
+def get_spotify_access_token():
+
+    auth_response = requests.post('https://accounts.spotify.com/api/token', {
+        'grant_type': 'client_credentials',
+        'client_id': SPOTIFY_CLIENT_ID,
+        'client_secret': SPOTIFY_CLIENT_SECRET,
+    })
+
+    access_token = None
+    auth_response_data = auth_response.json()
+    access_token = auth_response_data['access_token']
+
+    if access_token:
+        print(f"spotify authorized - {access_token}")
+        return access_token
+
+
 def main():
-
-    mpd_music_directory = get_music_directory()
-
-    logging.basicConfig(level=logging.INFO, format='%(levelname)-5s: %(message)s')
-    logging.getLogger().setLevel(logging.INFO)
 
     # get command line arguments
     arguments = get_arguments()
+
+    if arguments.api == "lastfm":
+        api_name = "lastfm"
+        api_key = LASTFM_API_KEY
+    elif arguments.api == "spotify":
+        api_name = "spotify"
+        api_key = get_spotify_access_token()
+    elif arguments.api == "deezer":
+        api_name = "deezer"
+        api_key = None
+
+    mpd_music_directory = get_music_directory()
 
     # open mpd client connection
     client = mpd_open_connection(MPD_BIND_ADDRESS, MPD_BIND_PORT, MPD_PASSWORD, MPD_TIMEOUT, MPD_IDLE_TIMEOUT)
@@ -575,9 +736,10 @@ def main():
         # if current song and state are found send notification
         if bool(client.currentsong()) and client.status()['state'] in ("play", "pause", "stop"):
 
-            song = SongInfo(client.currentsong(), arguments.api, LASTFM_API_KEY, mpd_music_directory)
+            path = f"/home/user/music/{client.currentsong()['file']}"
+            song = SongInfo(path, api_name, api_key)
 
-            if song.id == client.currentsong()['id']:
+            if song.path and song.path == f"/home/user/music/{client.currentsong()['file']}":
                 send_notification(song)
 
     # else begin monitoring and send notification on play
@@ -588,9 +750,10 @@ def main():
             # if current song is found and state is play send notification
             if bool(client.currentsong()) and client.status()['state'] == "play":
 
-                song = SongInfo(client.currentsong(), arguments.api, LASTFM_API_KEY, mpd_music_directory)
+                path = f"/home/user/music/{client.currentsong()['file']}"
+                song = SongInfo(path, api_name, api_key)
 
-                if song.id == client.currentsong()['id']:
+                if song.path and song.path == f"/home/user/music/{client.currentsong()['file']}":
                     send_notification(song)
 
     # close mpd connection
