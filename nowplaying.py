@@ -743,10 +743,10 @@ def main():
         # if current song and state are found send notification
         if bool(client.currentsong()) and client.status()['state'] in ("play", "pause", "stop"):
 
-            path = f"/home/user/music/{client.currentsong()['file']}"
+            path = os.path.join(mpd_music_directory, client.currentsong()['file'])
             song = SongInfo(path, api_name, api_key)
 
-            if song.path and song.path == f"/home/user/music/{client.currentsong()['file']}":
+            if song.path and song.path == os.path.join(mpd_music_directory, client.currentsong()['file']):
                 send_notification(song)
 
     # else begin monitoring and send notification on play
@@ -757,10 +757,10 @@ def main():
             # if current song is found and state is play send notification
             if bool(client.currentsong()) and client.status()['state'] == "play":
 
-                path = f"/home/user/music/{client.currentsong()['file']}"
+                path = os.path.join(mpd_music_directory, client.currentsong()['file'])
                 song = SongInfo(path, api_name, api_key)
 
-                if song.path and song.path == f"/home/user/music/{client.currentsong()['file']}":
+                if song.path and song.path == os.path.join(mpd_music_directory, client.currentsong()['file']):
                     send_notification(song)
 
     # close mpd connection
