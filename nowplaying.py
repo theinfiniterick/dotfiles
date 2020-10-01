@@ -310,7 +310,11 @@ class SongInfo:
 
     def get_folder_image(self, folder):
 
-        filenames = ["cover", "Cover", "front", "Front", "folder", "Folder", "thumb", "Thumb", "album", "Album", "albumart", "AlbumArt", "albumartsmall", "AlbumArtSmall"]
+        filenames = [
+            "cover", "Cover", "front", "Front",
+            "folder", "Folder", "thumb", "Thumb", "album", "Album",
+            "albumart", "AlbumArt", "albumartsmall", "AlbumArtSmall"
+        ]
         extensions = ["png", "jpg", "jpeg", "gif", "svg", "bmp", "tif", "tiff"]
 
         # check for the existence of a file in current folder that macthes a combination of filenames and extensions
