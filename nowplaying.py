@@ -19,13 +19,13 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gio
 from gi.repository.GdkPixbuf import Pixbuf
 
-PROG = "nowplaying"
+PROG = 'nowplaying'
 
-LASTFM_API_KEY = "11353ee2e14240f46be72d71726f3f79"
-SPOTIFY_CLIENT_ID = "3ad71cf0ae544e7e935927e5d9a5cbad"
-SPOTIFY_CLIENT_SECRET = "862905d9380645a9ba29789308d795d5"
+LASTFM_API_KEY = '11353ee2e14240f46be72d71726f3f79'
+SPOTIFY_CLIENT_ID = '3ad71cf0ae544e7e935927e5d9a5cbad'
+SPOTIFY_CLIENT_SECRET = '862905d9380645a9ba29789308d795d5'
 
-MPD_BIND_ADDRESS = "127.0.0.1"
+MPD_BIND_ADDRESS = '127.0.0.1'
 MPD_BIND_PORT = 6600
 MPD_PASSWORD = None
 MPD_TIMEOUT = None
@@ -34,12 +34,12 @@ MPD_IDLE_TIMEOUT = None
 NOTIFY_DEFAULT_IMAGE = '/home/user/images/icon/pacman/red.png'
 NOTIFY_ID = 999999
 NOTIFY_TIMEOUT = 1500
-NOTIFY_URGENCY = 0
+NOTIFY_URGENCY = 0  # 0 = low, 1 = normal, 2 = critical
 
 
 class SongInfo:
 
-    def __init__(self, path=None, api_name="deezer", api_key=None):
+    def __init__(self, path=None, api_name='deezer', api_key=None):
 
         # set initial values for song properties to None
         self.path = self.filename = self.folder = self.mimetype = self.api_name = self.api_key = self.title = self.artist = self.album = self.date = self.image_data = self.image_path = self.image_url = None
