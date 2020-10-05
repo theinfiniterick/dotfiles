@@ -643,11 +643,11 @@ def notify_on_track_change():
 
     token = get_spotify_access_token()
 
-    path = os.path.join(mpd_music_directory, client.currentsong()['file'])
+    path = None
 
     while client.idle("player"):
 
-        if bool(client.currentsong()) and 'file' in client.currentsong() and 'state' in client.status() and client.status()['state'] == "play" and os.path.join(mpd_music_directory, client.currentsong()['file']) != path:
+        if bool(client.currentsong()) and 'file' in client.currentsong() and 'state' in client.status() and client.status()['state'] == "play" and os.path.join(music_directory, client.currentsong()['file']) != path:
 
             path = os.path.join(music_directory, client.currentsong()['file'])
             song = TrackInfo(path, token, client.currentsong())
