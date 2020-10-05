@@ -3,7 +3,6 @@
 """
 TODO: How often should spotify token be updated?
 TODO: Config file
-TODO: Ability to pass metadata to TrackInfo class
 TODO: Ingtegrate albumartist
 """
 
@@ -90,7 +89,7 @@ class TrackInfo:
         # if title, artist or album still missing, append data parsed from filename
         if props.keys() < {'title', 'artist', 'album'}:
 
-            filename_dict = self.get_filename_data(self.path)
+            filename_dict = self.get_filename_data()
 
             if 'title' not in props and 'title' in filename_dict:
                 props['title'] = filename_dict['title']
@@ -100,13 +99,13 @@ class TrackInfo:
                 props['album'] = filename_dict['album']
 
         # append embedded image data to properties if it exists
-        image_data = self.get_embedded_image_data(self.path)
+        image_data = self.get_embedded_image_data()
         if image_data:
             props['image_data'] = image_data
 
         # if image data not in properties, append local image path to properties if it exists
         if 'image_data' not in props:
-            image_path = self.get_local_image_path(self.path)
+            image_path = self.get_local_image_path()
             if image_path:
                 props['image_path'] = image_path
 
@@ -155,7 +154,7 @@ class TrackInfo:
 
         # clean album name of unwanted substrings
         if 'album' in props:
-            props['album'] = self._clean_album_name_string(props['album'])
+            props['album'] = self._clean_album_string(props['album'])
 
         # clean date of all data but year if possible
         if 'date' in props:
@@ -210,15 +209,12 @@ class TrackInfo:
 
         return cleaned_string_list
 
-    def get_filename_data(self, path=None):
+    def get_filename_data(self):
         """
         Returns a dictionary of data parsed from the filename (title, album, artist).
         """
 
-        if not path:
-            path = self.path
-
-        filename = os.path.basename(path)
+        filename = os.path.basename(self.path)
 
         unassigned_values = self._split_filename(filename)
         unassigned_fields = ['artist', 'album', 'title']
@@ -249,12 +245,9 @@ class TrackInfo:
 
         return found_data
 
-    def get_embedded_image_data(self, path=None):
+    def get_embedded_image_data(self):
 
-        if not path:
-            path = self.path
-
-        mutagen_object = mutagen.File(path)
+        mutagen_object = mutagen.File(self.path)
 
         # 3 = Cover (front), 2 = Other file icon, 1 = 32x32 pixel PNG file icon, 0 = Other, 18 = Illustration
         types = [3, 2, 1, 0, 18]
@@ -297,22 +290,17 @@ class TrackInfo:
                 if os.path.exists(path):
                     return path
 
-    def get_local_image_path(self, path=None):
-
-        if not path:
-            path = self.path
-
-        filename = os.path.basename(path)
+    def get_local_image_path(self):
 
         matching_folder_names = [r'^disc\s?\d+.*$', r'^cd\s?\d+.*$', r'^dvd\s?\d+.*$', r'^set\s?\d+.*$', 'mp3', 'm4a', 'flac', 'wma']
 
         # set initial value of current folder to the directory of the audio file
-        current_folder_path = os.path.dirname(path)
+        current_folder_path = os.path.dirname(self.path)
         current_folder_name = os.path.basename(current_folder_path)
 
         # append initial folder to matching_folder_names
         if current_folder_name not in matching_folder_names:
-            matching_folder_names.append(os.path.basename(current_folder_path))
+            matching_folder_names.append(current_folder_name)
 
         # while current_folder_name matches a folder in matching_folder_names and current folder is not "/" or self.music_directory
         while re.match("|".join(matching_folder_names), current_folder_name.lower()) and current_folder_path != "/":
@@ -454,7 +442,7 @@ class TrackInfo:
 
                 return {'title': title, 'artist': artist, 'album': album, 'date': date, 'image_url': image}
 
-    def _clean_album_name_string(self, name=None):
+    def _clean_album_string(self, name=None):
 
         # remove unwanted strings from album name
         unwanted_substrings = [
@@ -625,6 +613,26 @@ def send_notification(props):
         print("error: failed to send notification.")
 
 
+def notify_now():
+
+    client = open_mpd_connection(MPD_BIND_ADDRESS, MPD_BIND_PORT, MPD_PASSWORD, MPD_TIMEOUT, MPD_IDLE_TIMEOUT)
+
+    music_directory = get_music_directory()
+
+    token = get_spotify_access_token()
+
+    if bool(client.currentsong()) and 'file' in client.currentsong() and 'state' in client.status() and client.status()['state'] in ("play", "pause", "stop"):
+
+        path = os.path.join(music_directory, client.currentsong()['file'])
+        song = TrackInfo(path, token, client.currentsong())
+
+        if song and song.path == os.path.join(music_directory, client.currentsong()['file']):
+            send_notification(song.props)
+
+    client.close()
+    client.disconnect()
+
+
 def notify_on_track_change():
 
     client = open_mpd_connection(MPD_BIND_ADDRESS, MPD_BIND_PORT, MPD_PASSWORD, MPD_TIMEOUT, MPD_IDLE_TIMEOUT)
@@ -646,26 +654,6 @@ def notify_on_track_change():
 
             if song and song.path == os.path.join(music_directory, client.currentsong()['file']):
                 send_notification(song.props)
-
-
-def notify_now():
-
-    client = open_mpd_connection(MPD_BIND_ADDRESS, MPD_BIND_PORT, MPD_PASSWORD, MPD_TIMEOUT, MPD_IDLE_TIMEOUT)
-
-    music_directory = get_music_directory()
-
-    token = get_spotify_access_token()
-
-    if bool(client.currentsong()) and 'file' in client.currentsong() and 'state' in client.status() and client.status()['state'] in ("play", "pause", "stop"):
-
-        path = os.path.join(music_directory, client.currentsong()['file'])
-        song = TrackInfo(path, token, client.currentsong())
-
-        if song and song.path == os.path.join(music_directory, client.currentsong()['file']):
-            send_notification(song.props)
-
-    client.close()
-    client.disconnect()
 
 
 def main():
