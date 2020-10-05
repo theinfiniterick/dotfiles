@@ -3,7 +3,7 @@
 """
 TODO: How often should spotify token be updated?
 TODO: Config file
-TODO: Ability to pass metadata to SongInfo class
+TODO: Ability to pass metadata to TrackInfo class
 TODO: API requests tokens and parameters
 TODO: Additional APIs: Discogs, TheAudioDB, Musicbrainz, iTunes
 TODO: Ingtegrate albumartist
