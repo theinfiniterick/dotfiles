@@ -1,0 +1,204 @@
+[global] 
+monitor = 0
+follow = mouse
+;geometry = "650x50-6+920"
+geometry = "650x50-635+40"
+indicate_hidden = yes
+shrink = no
+transparency = 12
+notification_height = 32
+separator_height = 3
+padding = 10
+horizontal_padding = 10
+frame_width = 2
+frame_color = "#FF79C6"
+separator_color = "#BD93F9"
+sort = yes
+idle_threshold = 60
+font = Noto Sans 16
+line_height = 6
+markup = full
+;format = "<b>%s</b>\n%b"
+format = "%b"
+alignment = left
+show_age_threshold = 60
+word_wrap = no
+ellipsize = end
+ignore_newline = no
+stack_duplicates = true
+
+    hide_duplicate_count = true
+
+    show_indicators = yes
+
+    icon_position = left
+
+    min_icon_size = 48
+
+    max_icon_size = 132
+
+	;icon_path = "/home/user/images/icon/notify"
+
+    sticky_history = yes
+
+    history_length = 20
+
+	dmenu = /usr/bin/dmenu -p dunst:
+
+    browser = /usr/bin/firefox -new-tab
+
+    always_run_script = true
+
+    title = Dunst
+
+    class = Dunst
+
+    startup_notification = false
+
+    verbosity = mesg
+
+    corner_radius = 2
+
+    force_xinerama = false
+
+    mouse_left_click = do_action
+
+    mouse_middle_click = close_all
+
+    mouse_right_click = close_current
+
+[experimental]
+    
+	per_monitor_dpi = false
+
+[shortcuts]
+
+	close = ctrl+space
+	close_all = ctrl+shift+space
+	history = ctrl+period
+	context = ctrl+shift+grave
+
+[urgency_low]
+    background = "#000000"
+    foreground = "#FFFFFF"
+    frame_color = "#282A36"
+	timeout = 5
+	icon = "default"
+
+[urgency_normal]
+    background = "#000000"
+    foreground = "#FFFFFF"
+    frame_color = "#333333"
+	timeout = 3
+	icon = "default"
+
+[urgency_critical]
+    background = "#110000"
+    foreground = "#FFFFFF"
+    frame_color = "#CC0000"
+	timeout = 3
+	icon = "default"
+
+[play_sound]
+	appname = "play"
+	script = ~/scripts/test.sh
+
+[transient_disable]
+    match_transient = yes
+    set_transient = no
+
+[stack-discord]
+	desktop_entry = "discord"
+	urgency = "low"
+	timeout = 1
+
+[stack-adapter]
+	appname = "adapter"
+	set_stack_tag = "adapter"
+
+[stack-backlight]
+	appname = "backlight"
+	set_stack_tag = "backlight"
+
+[stack-backup]
+	appname = "backup"
+	set_stack_tag = "backup"
+
+[stack-battery]
+	appname = "battery"
+	set_stack_tag = "battery"
+
+[stack-capture]
+	appname = "capture"
+	set_stack_tag = "capture"
+
+[stack-gamepad]
+	appname = "gamepad"
+	set_stack_tag = "gamepad"
+
+[stack-hdmi]
+	appname = "hdmi"
+	set_stack_tag = "hdmi"
+
+[stack-headphone]
+	appname = "headphone"
+	set_stack_tag = "headphone"
+
+[stack-keybindings]
+	appname = "keybindings"
+	set_stack_tag = "keybindings"
+
+[stack-master]
+	appname = "master"
+	set_stack_tag = "master"
+
+[stack-microphone]
+	appname = "microphone"
+	set_stack_tag = "microphone"
+
+[stack-mouse]
+	appname = "mouse"
+	set_stack_tag = "mouse"
+
+[stack-network]
+	appname = "network"
+	set_stack_tag = "network"
+
+[stack-nowplaying]
+	appname = "nowplaying"
+	set_stack_tag = "nowplaying"
+
+[stack-pacman]
+	appname = "pacman"
+	set_stack_tag = "pacman"
+
+[stack-rfkill]
+	appname = "rfkill"
+	set_stack_tag = "rfkill"
+
+[stack-screencapture]
+    appname = "screencapture"
+    set_stack_tag = "screencapture"
+
+[stack-touchpad]
+    appname = "touchpad"
+    set_stack_tag = "touchpad"
+
+[stack-usb]
+	appname = "usb"
+	set_stack_tag = "usb"
+
+[stack-volume]
+	appname = "volume"
+	set_stack_tag = "volume"
+
+[stack-vpn]
+	appname = "vpn"
+	set_stack_tag = "vpn"
+
+[stack-wallpaper]
+    appname ="wallpaper"
+    set_stack_tag = "wallpaper"
+
+
+# vim: ft=dosini
