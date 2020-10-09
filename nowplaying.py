@@ -23,8 +23,6 @@ from mpd import MPDClient as MPDClient
 from mutagen import File as MutagenFile
 
 gi.require_version("GdkPixbuf", "2.0")
-from pprint import pprint
-
 from gi.repository.GdkPixbuf import Pixbuf
 
 PROG = 'nowplaying'
@@ -462,9 +460,6 @@ def get_track_info(mpd_dict, path, token):
         # if api returned results, append missing data to props
         if api_dict and api_dict.keys() >= {'artist', 'title', 'album', 'date', 'image_url'}:
 
-            print("api_dict:")
-            pprint(api_dict)
-
             # clear incomplete image fields from props
             if 'image_data' in props:
                 del props['image_data']
@@ -486,9 +481,6 @@ def get_track_info(mpd_dict, path, token):
     # reduce date string to year, if possible
     if 'date' in props:
         props['date'] = _get_clean_date_string(props['date'])
-
-    print("props:")
-    pprint(props)
 
     return props
 
