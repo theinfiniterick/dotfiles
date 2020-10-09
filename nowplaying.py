@@ -355,7 +355,7 @@ def api_track_data(artist=None, track=None, token=None):
         # get the index for the first acceptable record
         for index in range(len(track_records)):
             record = track_records[index]
-            if record['album'].keys() >= {'type', 'name', 'release_date', 'images', 'artists'}:
+            if record['album'].keys() >= {'type', 'name', 'release_date', 'images'}:
 
                 if not first_index:
                     first_index = index
