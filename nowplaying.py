@@ -81,7 +81,7 @@ def get_image_data(path=None):
 
 def get_image_path(path=None):
     """
-    Locate path of local album cover image in matching folders.\n
+    Locate path of local album cover image in audio file folder(s).\n
     If no image, None is returned.\n
     Args:
     - path (string)
@@ -291,11 +291,16 @@ def api_album_data(artist=None, album=None, token=None):
 
         album_records = results['albums']['items']
         record_index = None
+        first_index = None
 
         # get the index for the first acceptable record
         for index in range(len(album_records)):
             record = album_records[index]
             if record.keys() >= {'album_type', 'artists', 'name', 'release_date', 'images'}:
+
+                if not first_index:
+                    first_index = index
+
                 album = record['name']
                 type = record['album_type']
                 if type == "album" and not _album_contains_bad_substrings(album):
@@ -304,9 +309,7 @@ def api_album_data(artist=None, album=None, token=None):
 
         # if no index was selected, validate the first record and set selected index to 0
         if not isinstance(record_index, int):
-            record = album_records[0]
-            if record.keys() >= {'album_type', 'artists', 'name', 'release_date', 'images'}:
-                record_index = 0
+            record_index = first_index
 
         # if a record index was selected, return the values for that record
         if isinstance(record_index, int):
@@ -347,11 +350,16 @@ def api_track_data(artist=None, track=None, token=None):
 
         track_records = results['tracks']['items']
         record_index = None
+        first_index = None
 
         # get the index for the first acceptable record
         for index in range(len(track_records)):
             record = track_records[index]
-            if record['album'].keys() >= {'type', 'name', 'release_date', 'images'}:
+            if record['album'].keys() >= {'type', 'name', 'release_date', 'images', 'artists'}:
+
+                if not first_index:
+                    first_index = index
+
                 type = record['album']['type']
                 album = record['album']['name']
                 if type == "album" and not _album_contains_bad_substrings(album):
@@ -360,9 +368,7 @@ def api_track_data(artist=None, track=None, token=None):
 
         # if no index was selected, validate the first record and set selected index to 0
         if not isinstance(record_index, int):
-            record = track_records[0]
-            if record['album'].keys() >= {'type', 'name', 'release_date', 'images', 'artists'}:
-                record_index = 0
+            record_index = first_index
 
         # if a record index was selected, return the values for that record
         if isinstance(record_index, int):
@@ -714,19 +720,21 @@ def notify_on_change(client, music_directory, token=None, prog=PROG, notify_sett
     - notify_settings (tuple)
     """
 
-    def _interrupt_signal(client):
+    def _cancel_process(client):
         """
-        Close MPD socket and exit with success when interrupt signal is received.
+        Close MPD socket and cleanly end the process.
         """
 
         sys.stdout.write('\b\b\r')
+        sys.stdout.write("POOPING OUT")
 
         if client:
             client.close()
 
         sys.exit(0)
 
-    signal.signal(signal.SIGINT, lambda x, y: _interrupt_signal(client))
+    signal.signal(signal.SIGINT, lambda x, y: _cancel_process(client))
+    signal.signal(signal.SIGTERM, lambda x, y: _cancel_process(client))
 
     while client.idle('player'):
 
