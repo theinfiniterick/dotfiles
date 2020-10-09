@@ -4,6 +4,7 @@
 TODO: get_image_data - add code for wma, wav, ogg
 TODO: get_image_path - folder_name_patterns - perfect patterns for numbers as digits and strings
 TODO: get_image_path - _get_folder_image - add all valid cover art filenames
+TODO: config file
 """
 
 import argparse
