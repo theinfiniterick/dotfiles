@@ -1,251 +1,571 @@
 #!/usr/bin/python
 
 """
+TODO: Move Spotify API auth data to config
 TODO: get_image_data - add code for wma, wav, ogg
 TODO: get_image_path - folder_name_patterns - perfect patterns for numbers as digits and strings
 TODO: get_image_path - _get_folder_image - add all valid cover art filenames
-TODO: config file
 """
 
 import argparse
+import configparser
 import os.path
 import re
 import signal
 import sys
 import urllib.request
-from re import match
 
-import dbus
 import gi.repository
+import mpd
+import mutagen
 import notify2
 import requests
 from gi.repository import Gio
-from mpd import MPDClient as MPDClient
-from mutagen import File as MutagenFile
 
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository.GdkPixbuf import Pixbuf
 
-PROG = 'nowplaying'
-MPD_SETTINGS = {'host': 'localhost', 'port': 6600,
-                'password': None, 'timeout': None, 'idletimeout': None}
-NOTIFY_SETTINGS = {'default_image': '/home/user/images/icon/pacman/red.png',
-                   'id': 999999, 'timeout': 1500, 'urgency': 0}
+PROG = "nowplaying"
 
 
-def get_image_data(path=None):
-    """
-    Retreive embedded image data from audio file.\n
-    Supports: mp3, m4a, flac (wma, ogg, wav).\n
-    If no image, None is returned.\n
-    Args:
-    - path (string)
-    """
+class SongInfo:
 
-    file = MutagenFile(path)
+    def __init__(self, mpd_dict):
 
-    # if a valid file with valid tags was found, proceed
-    if file and file.tags and len(file.tags.values()) > 0:
+        self.id = mpd_dict['id']
+        self.path = os.path.join(settings['mpd']['directory'], mpd_dict['file'])
+        self.filename = os.path.basename(self.path)
 
-        # declare acceptable values for embedded image tag.type
-        types = [
-            3,  # Cover (front)
-            2,  # Other file icon
-            1,  # 32x32 pixel PNG file icon
-            0,  # Other
-            18  # Illustration
+        self.props = self.get_props(mpd_dict)
+
+        os.system('clear')
+        print(str(self.props))
+
+    def __repr__(self):
+        return "SongInfo('{}')".format(self.filename)
+
+    def get_props(self, mpd_dict):
+
+        def _get_clean_album_string(album):
+
+            return re.sub(r'\s?(\(|\[)[^\)]*(edition|release|remaster|remastered)(\)|\])$', '', album, flags=re.IGNORECASE).strip()
+
+        def _get_clean_date_string(date):
+
+            # if string begins with year, return first four characters
+            if date and re.match(r'^19\d{2}\D?.*$|^20\d{2}\D?.*$', date):
+                return date[0:4]
+            # else if string ends with year, return last four characters
+            elif date and re.match(r'|^.*\D19\d{2}$|^.*\D20\d{2}$', date):
+                return date[-4:]
+            else:
+                return date
+
+        props = dict()
+
+        if 'title' in mpd_dict:
+            props['title'] = mpd_dict['title']
+        if 'artist' in mpd_dict:
+            props['artist'] = mpd_dict['artist']
+        if 'album' in mpd_dict:
+            props['album'] = mpd_dict['album']
+        if 'date' in mpd_dict:
+            props['date'] = mpd_dict['date']
+
+        if 'title' not in props or 'artist' not in props or 'album' not in props:
+
+            filename_dict = self.get_filename_dict()
+
+            if 'title' not in props and 'title' in filename_dict:
+                props['title'] = filename_dict['title']
+            if 'artist' not in props and 'artist' in filename_dict:
+                props['artist'] = filename_dict['artist']
+            if 'album' not in props and 'album' in filename_dict:
+                props['album'] = filename_dict['album']
+
+        props['image_data'] = self.get_image_data()
+
+        if props['image_data'] is None:
+            del props['image_data']
+
+        if 'image_data' not in props:
+
+            props['image_path'] = self.get_image_path()
+
+            if props['image_path'] is None:
+                del props['image_path']
+
+        if 'album' not in props or ('image_data' not in props and 'image_path' not in props):
+
+            if 'artist' in props and 'album' in props:
+                api_dict = self.api_album_data(props['artist'], props['album'])
+            elif 'artist' in props and 'title' in props:
+                api_dict = self.api_track_data(props['artist'], props['title'])
+            else:
+                api_dict = None
+
+            if api_dict and api_dict.keys() >= {'artist', 'title', 'album', 'date', 'image_url'}:
+
+                if 'image_data' in props:
+                    del props['image_data']
+                if 'image_path' in props:
+                    del props['image_path']
+
+                if 'title' in api_dict:
+                    props['title'] = api_dict['title']
+                props['artist'] = api_dict['artist']
+                props['album'] = api_dict['album']
+                props['date'] = api_dict['date']
+                props['image_url'] = api_dict['image_url']
+
+        if 'album' in props:
+            props['album'] = _get_clean_album_string(props['album'])
+
+        if 'date' in props:
+            props['date'] = _get_clean_date_string(props['date'])
+
+        return props
+
+    def get_filename_dict(self):
+
+        def _get_split_filename(filename):
+
+            # get filename without extension
+            string = os.path.splitext(filename)[0]
+
+            # declare patterns to protect from split
+            ignore_patterns = [
+                {'initial': 'Ep. ', 'replace': '((EPDOT))'},
+                {'initial': 'Dr. ', 'replace': '((DOCTORDOT))'},
+                {'initial': 'Jr. ', 'replace': '((JUNIORDOT))'},
+                {'initial': 'Sr. ', 'replace': '((SENIORDOT))'},
+                {'initial': 'Mr. ', 'replace': '((MISTERDOT))'},
+                {'initial': 'Ms. ', 'replace': '((MISSDOT))'},
+                {'initial': 'Mrs. ', 'replace': '((MISSESDOT))'},
+                {'initial': 'Vol. ', 'replace': '((VOLDOT))'}
+            ]
+
+            # replace protected patterns so prevent splitting
+            for i in range(len(ignore_patterns)):
+                string = string.replace(
+                    ignore_patterns[i]['initial'], ignore_patterns[i]['replace'])
+
+            # modify substrings deemed split points to match split regex
+            string = re.sub(r"(?<=^\d{2})\.\s+", " - ", string)
+
+            # split filename into chunks
+            chunks_dirty = re.split(r'\s+-\s+', string)
+
+            # replace protected patterns with original values
+            chunks_clean = []
+            for chunk in chunks_dirty:
+                for i in range(len(ignore_patterns)):
+                    chunk = chunk.replace(
+                        ignore_patterns[i]['replace'], ignore_patterns[i]['initial'])
+                chunks_clean.append(chunk.strip())
+
+            return chunks_clean
+
+        filename = os.path.basename(self.path)
+
+        chunks = _get_split_filename(filename)
+        assigned = dict()
+
+        # search for track number and add it to dict
+        for chunk in chunks:
+            if re.match(r'^\d{1,2}$', chunk):
+                assigned['track'] = chunk
+                chunks.remove(chunk)
+                break
+
+        # remove extra chunks from start of list
+        if len(chunks) > 3:
+            chunks = chunks[-3:]
+
+        if len(chunks) == 3:
+            assigned['artist'], assigned['album'], assigned['title'] = chunks
+        elif len(chunks) == 2:
+            assigned['artist'], assigned['title'] = chunks
+        elif len(chunks) == 1:
+            assigned['title'] = chunks[0]
+
+        return assigned
+
+    def get_image_data(self):
+
+        file = mutagen.File(self.path)
+
+        # if a valid file with valid tags was found, proceed
+        if file and file.tags and len(file.tags.values()) > 0:
+
+            # declare acceptable values for embedded image tag.type
+            types = [
+                3,  # Cover (front)
+                2,  # Other file icon
+                1,  # PictureType.FILE_ICON
+                0,  # PictureType.OTHER
+                18  # Illustration
+            ]
+
+            # mp3
+            if file.mime[0] == "audio/mp3":
+
+                for type in types:
+                    for tag in file.tags.values():
+                        if tag.FrameID == 'APIC' and int(tag.type) == type:
+                            return tag.data
+
+            # m4a
+            elif file.mime[0] == "audio/mp4":
+
+                if 'covr' in file.tags.keys():
+                    return file.tags['covr'][0]
+
+            # flac
+            elif file.mime[0] == "audio/flac":
+
+                for type in types:
+                    for tag in file.pictures:
+                        if tag.type == type:
+                            return tag.data
+
+    def get_image_path(self):
+
+        def _get_folder_image(folder):
+
+            filenames = [
+                'cover',
+                'Cover',
+                'front',
+                'Front',
+                'folder',
+                'Folder',
+                'thumb',
+                'Thumb',
+                'album',
+                'Album',
+                'albumart',
+                'AlbumArt',
+                'albumartsmall',
+                'AlbumArtSmall'
+            ]
+
+            extensions = [
+                'png',
+                'jpg',
+                'jpeg',
+                'gif',
+                'bmp',
+                'tif',
+                'tiff',
+                'svg'
+            ]
+
+            for name in filenames:
+                for ext in extensions:
+                    path = f'{folder}/{name}.{ext}'
+                    if os.path.exists(path):
+                        return path
+
+        folder_name_patterns = [
+            r'^disc\s?\d+.*$',
+            r'^cd\s?\d+.*$',
+            r'^dvd\s?\d+.*$',
+            r'^set\s?\d+.*$',
+            os.path.basename(os.path.dirname(self.path)),
+            os.path.splitext(self.path)[-1].lstrip('.')
         ]
 
-        # mp3
-        if file.mime[0] == "audio/mp3":
-
-            for type in types:
-                for tag in file.tags.values():
-                    if tag.FrameID == 'APIC' and int(tag.type) == type:
-                        return tag.data
-
-        # m4a
-        elif file.mime[0] == "audio/mp4":
-
-            if 'covr' in file.tags.keys():
-                return file.tags['covr'][0]
-
-        # flac
-        elif file.mime[0] == "audio/flac":
-
-            for type in types:
-                for tag in file.pictures:
-                    if tag.type == type:
-                        return tag.data
-
-
-def get_image_path(path=None):
-    """
-    Locate path of local album cover image in audio file folder(s).\n
-    If no image, None is returned.\n
-    Args:
-    - path (string)
-    """
-
-    def _get_folder_image(folder):
-        """
-        Locate album cover image in specified folder.\n
-        If no image, None is returned.\n
-        Args:
-        - folder (string)
-        """
-
-        filenames = [
-            'cover',
-            'Cover',
-            'front',
-            'Front',
-            'folder',
-            'Folder',
-            'thumb',
-            'Thumb',
-            'album',
-            'Album',
-            'albumart',
-            'AlbumArt',
-            'albumartsmall',
-            'AlbumArtSmall'
-        ]
-
-        extensions = [
-            'png',
-            'jpg',
-            'jpeg',
-            'gif',
-            'bmp',
-            'tif',
-            'tiff',
-            'svg'
-        ]
-
-        for name in filenames:
-            for ext in extensions:
-                path = f'{folder}/{name}.{ext}'
-                if os.path.exists(path):
-                    return path
-
-    folder_name_patterns = [
-        r'^disc\s?\d+.*$',
-        r'^cd\s?\d+.*$',
-        r'^dvd\s?\d+.*$',
-        r'^set\s?\d+.*$',
-        os.path.basename(os.path.dirname(path)),
-        os.path.splitext(path)[-1].lstrip('.')
-    ]
-
-    folder_path = os.path.dirname(path)
-    folder_name = os.path.basename(folder_path)
-
-    while re.match("|".join(folder_name_patterns), folder_name.lower()):
-
-        image_path = _get_folder_image(folder_path)
-
-        if image_path:
-            return image_path
-
-        folder_path = os.path.abspath(os.path.join(folder_path, os.pardir))
+        folder_path = os.path.dirname(self.path)
         folder_name = os.path.basename(folder_path)
 
+        while re.match("|".join(folder_name_patterns), folder_name.lower()):
 
-def get_filename_dict(path=None):
-    """
-    Get dictionary of track data parsed from filename in specified path.\n
-    Dictionary elements returned are title, album, artist and track.\n
-    Args:
-    - path (string)
-    """
+            image_path = _get_folder_image(folder_path)
 
-    def _get_split_filename(filename):
-        """
-        Split filename string into a list of track properties.\n
-        Args:
-        - filename (string)
-        """
+            if image_path:
+                return image_path
 
-        # get filename without extension
-        string = os.path.splitext(filename)[0]
+            folder_path = os.path.abspath(os.path.join(folder_path, os.pardir))
+            folder_name = os.path.basename(folder_path)
 
-        # declare patterns to protect from split
-        ignore_patterns = [
-            {'initial': 'Ep. ', 'replace': '((EPDOT))'},
-            {'initial': 'Dr. ', 'replace': '((DOCTORDOT))'},
-            {'initial': 'Jr. ', 'replace': '((JUNIORDOT))'},
-            {'initial': 'Sr. ', 'replace': '((SENIORDOT))'},
-            {'initial': 'Mr. ', 'replace': '((MISTERDOT))'},
-            {'initial': 'Ms. ', 'replace': '((MISSDOT))'},
-            {'initial': 'Mrs. ', 'replace': '((MISSESDOT))'},
-            {'initial': 'Vol. ', 'replace': '((VOLDOT))'}
+    def _album_contains_bad_substrings(self, album):
+
+        unwanted_substrings = ('best of', 'greatest hits', 'collection', 'b-sides', 'classics')
+
+        return any([substring in album.lower() for substring in unwanted_substrings])
+
+    def api_album_data(self, artist, album):
+
+        artist, album = self.props['artist'], self.props['album']
+
+        headers = {'Authorization': f'Bearer {spotify_token}'}
+        params = {'type': 'album', 'offset': 0, 'limit': 5}
+        query = f'artist:{artist}%20album:{album}'
+        url = f'https://api.spotify.com/v1/search?q={query}'
+
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            results = response.json()
+        except requests.exceptions.ConnectionError:
+            return None
+
+        # if requested results are valid, get API data
+        if 'albums' in results and 'total' in results['albums'] and results['albums']['total'] > 0:
+
+            album_records = results['albums']['items']
+            record_index = None
+            first_index = None
+
+            # get the index for the first acceptable record
+            for index in range(len(album_records)):
+                record = album_records[index]
+                if record.keys() >= {'album_type', 'artists', 'name', 'release_date', 'images'}:
+
+                    if not first_index:
+                        first_index = index
+
+                    album = record['name']
+                    type = record['album_type']
+                    if type == "album" and not self._album_contains_bad_substrings(album):
+                        record_index = index
+                        break
+
+            # if no index was selected, validate the first record and set selected index to 0
+            if not isinstance(record_index, int):
+                record_index = first_index
+
+            # if a record index was selected, return the values for that record
+            if isinstance(record_index, int):
+                record = album_records[record_index]
+                artist = record['artists'][0]['name']
+                album = record['name']
+                date = record['release_date']
+                image = record['images'][0]['url']
+                return {'artist': artist, 'album': album, 'date': date, 'image_url': image}
+
+    def api_track_data(self, artist, track):
+
+        headers = {'Authorization': f'Bearer {spotify_token}'}
+        params = {'type': 'track', 'offset': 0, 'limit': 5}
+        query = f'artist:{artist}%20track:{track}'
+        url = f'https://api.spotify.com/v1/search?q={query}'
+
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            results = response.json()
+        except requests.exceptions.ConnectionError:
+            return None
+
+        # if requested results are valid, get API data
+        if 'tracks' in results and 'total' in results['tracks'] and results['tracks']['total'] > 0:
+
+            track_records = results['tracks']['items']
+            record_index = None
+            first_index = None
+
+            # get the index for the first acceptable record
+            for index in range(len(track_records)):
+                record = track_records[index]
+                if record['album'].keys() >= {'type', 'name', 'release_date', 'images'}:
+
+                    if not first_index:
+                        first_index = index
+
+                    type = record['album']['type']
+                    album = record['album']['name']
+                    if type == "album" and not self._album_contains_bad_substrings(album):
+                        record_index = index
+                        break
+
+            # if no index was selected, validate the first record and set selected index to 0
+            if not isinstance(record_index, int):
+                record_index = first_index
+
+            # if a record index was selected, return the values for that record
+            if isinstance(record_index, int):
+                record = track_records[record_index]
+                title = record['name']
+                artist = record['artists'][0]['name']
+                album = record['album']['name']
+                date = record['album']['release_date']
+                image = record['album']['images'][0]['url']
+                return {'title': title, 'artist': artist, 'album': album, 'date': date, 'image_url': image}
+
+
+def cancel_process(client=None):
+
+    sys.stdout.write('\b\b\r')
+
+    if client is not None:
+        client.close()
+
+    sys.exit(0)
+
+
+def get_settings():
+
+    def _music_directory():
+
+        path_list = (
+            "{}/mpd/mpd.conf".format(os.getenv('XDG_CONFIG_HOME')),
+            "{}/.config/mpd/mpd.conf".format(os.getenv('HOME')),
+            "/home/{}/.config/mpd/mpd.conf".format(os.getenv('USER')),
+            "/home/{}/.config/mpd/mpd.conf".format(os.getlogin())
+        )
+
+        for path in path_list:
+            if os.path.isfile(path):
+                for line in open(path, 'r'):
+                    if re.match(r'^music_directory\s+\".*\"$', line):
+                        return os.path.expanduser(line.strip().split()[-1].strip('\"'))
+                    elif re.match(r'^music_directory\s+\'.*\'$', line):
+                        return os.path.expanduser(line.strip().split()[-1].strip("\'"))
+
+    def _config_path():
+
+        filename = 'config.ini'
+
+        path_list = (
+            "{}/nowplaying/{}".format(os.getenv('XDG_CONFIG_HOME'), filename),
+            "{}/.config/nowplaying/{}".format(os.getenv('HOME'), filename),
+            "/home/{}/.config/nowplaying/{}".format(os.getlogin(), filename)
+        )
+
+        for path in path_list:
+            if os.path.isfile(path):
+                return path
+
+    def _section_defaults(section):
+
+        new_section_dict = dict()
+
+        for field in expected_data[section]:
+
+            field_name = field['name']
+            field_default = field['default']
+
+            new_section_dict[field_name] = field_default
+
+        return new_section_dict
+
+    def _all_defaults(expected_data):
+
+        new_dict = dict()
+
+        for section in expected_data:
+            new_dict[section] = _section_defaults(section)
+
+        return new_dict
+
+    # dictionary of fields expected to be in config
+    expected_data = {
+        'mpd': [
+            {'name': 'directory', 'type': 'str', 'default': _music_directory()},
+            {'name': 'host', 'type': 'str', 'default': 'localhost'},
+            {'name': 'port', 'type': 'int', 'default': 6600},
+            {'name': 'password', 'type': 'str', 'default': None},
+            {'name': 'timeout', 'type': 'int', 'default': None},
+            {'name': 'idletimeout', 'type': 'int', 'default': None}
+        ],
+        'notify': [
+            {'name': 'default_image', 'type': 'str', 'default': None},
+            {'name': 'id', 'type': 'int', 'default': None},
+            {'name': 'timeout', 'type': 'int', 'default': None},
+            {'name': 'urgency', 'type': 'int', 'default': None}
         ]
+    }
 
-        # replace protected patterns so prevent splitting
-        for i in range(len(ignore_patterns)):
-            string = string.replace(
-                ignore_patterns[i]['initial'], ignore_patterns[i]['replace'])
+    config_path = _config_path()
 
-        # modify substrings deemed split points to match split regex
-        string = re.sub(r"(?<=^\d{2})\.\s+", " - ", string)
+    if config_path is None:
 
-        # split filename into chunks
-        chunks = re.split(r'\s+-\s+', string)
+        return _all_defaults(expected_data)
 
-        # replace protected patterns with original values
-        cleaned_chunks = []
-        for chunk in chunks:
-            for i in range(len(ignore_patterns)):
-                chunk = chunk.replace(
-                    ignore_patterns[i]['replace'], ignore_patterns[i]['initial'])
-            cleaned_chunks.append(chunk.strip())
+    else:
 
-        return cleaned_chunks
+        config = configparser.ConfigParser()
+        config.read(config_path)
 
-    filename = os.path.basename(path)
+        new_dict = dict()
 
-    chunks = _get_split_filename(filename)
-    assigned = dict()
+        for section in expected_data:
 
-    # search for track number and add it to dict
-    for chunk in chunks:
-        if re.match(r'^\d{1,2}$', chunk):
-            assigned['track'] = chunk
-            chunks.remove(chunk)
-            break
+            if section not in config:
 
-    # if more than three values in list, delete all buy last three values
-    if len(chunks) > 3:
-        del chunks[:2]
+                new_dict[section] = _section_defaults(section)
 
-    if len(chunks) == 3:
-        assigned['artist'], assigned['album'], assigned['title'] = chunks[0], chunks[1], chunks[2]
-    elif len(chunks) == 2:
-        assigned['artist'], assigned['title'] = chunks[0], chunks[1]
-    elif len(chunks) == 1:
-        assigned['title'] = chunks[0]
+            else:
 
-    return assigned
+                new_section_dict = dict()
+
+                for field in expected_data[section]:
+
+                    field_name = field['name']
+                    field_default = field['default']
+
+                    if field_name not in config[section]:
+
+                        new_value = field_default
+
+                    else:
+
+                        field_type = field['type']
+                        field_value = config[section][field_name]
+
+                        if field_value == "":
+
+                            new_value = field_default
+
+                        elif field_type == 'int':
+
+                            try:
+                                new_value = int(field_value)
+                            except ValueError:
+                                new_value = field_default
+
+                        else:
+
+                            new_value = field_value
+
+                    new_section_dict[field_name] = new_value
+
+                new_dict[section] = new_section_dict
+
+        if not os.path.isdir(new_dict['mpd']['directory']):
+            new_dict['mpd']['directory'] = _music_directory()
+
+        if not os.path.isfile(new_dict['notify']['default_image']):
+            new_dict['notify']['default_image'] = None
+
+        return new_dict
 
 
-def _album_contains_bad_substrings(album=None):
-    """
-    Returns True if album name contains unwanted substrings.\n
-    Args:
-    - name (string)
-    """
+def get_mpd_client():
 
-    unwanted_substrings = ('best of', 'greatest hits', 'collection', 'b-sides', 'classics')
+    set = settings['mpd']
 
-    return any([substring in album.lower() for substring in unwanted_substrings])
+    obj = mpd.MPDClient()
+
+    if set['timeout']:
+        obj.timeout = set['timeout']
+
+    if set['idletimeout']:
+        obj.idletimeout = set['idletimeout']
+
+    if set['password']:
+        obj.password(set['password'])
+
+    try:
+        obj.connect(set['host'], set['port'])
+    except ConnectionRefusedError:
+        sys.exit(
+            f"error: could not connect to {set['host']}:{str(set['port'])}")
+
+    return obj
 
 
-def get_spotify_access_token():
-    """
-    Get auth token for Spotify API.\n
-    If no token, None is returned.
-    """
+def get_spotify_token():
 
     access_token = None
 
@@ -258,509 +578,167 @@ def get_spotify_access_token():
     auth_response_data = auth_response.json()
     access_token = auth_response_data['access_token']
 
-    if access_token:
-        return access_token
+    return access_token
 
 
-def api_album_data(artist=None, album=None, token=None):
-    """
-    Request album data from Spotify API and compile results as a dictionary.\n
-    If no records found, None is returned.\n
-    Args:
-    - artist (string)
-    - album (string)
-    - token (string)
-    """
+def get_arguments():
 
-    if not token:
-        token = get_spotify_access_token()
-
-    headers = {'Authorization': f'Bearer {token}'}
-    params = {'type': 'album', 'offset': 0, 'limit': 5}
-    query = f'artist:{artist}%20album:{album}'
-    url = f'https://api.spotify.com/v1/search?q={query}'
-
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        results = response.json()
-    except requests.exceptions.ConnectionError:
-        return None
-
-    # if requested results are valid, get API data
-    if 'albums' in results and 'total' in results['albums'] and results['albums']['total'] > 0:
-
-        album_records = results['albums']['items']
-        record_index = None
-        first_index = None
-
-        # get the index for the first acceptable record
-        for index in range(len(album_records)):
-            record = album_records[index]
-            if record.keys() >= {'album_type', 'artists', 'name', 'release_date', 'images'}:
-
-                if not first_index:
-                    first_index = index
-
-                album = record['name']
-                type = record['album_type']
-                if type == "album" and not _album_contains_bad_substrings(album):
-                    record_index = index
-                    break
-
-        # if no index was selected, validate the first record and set selected index to 0
-        if not isinstance(record_index, int):
-            record_index = first_index
-
-        # if a record index was selected, return the values for that record
-        if isinstance(record_index, int):
-            record = album_records[record_index]
-            artist = record['artists'][0]['name']
-            album = record['name']
-            date = record['release_date']
-            image = record['images'][0]['url']
-            return {'artist': artist, 'album': album, 'date': date, 'image_url': image}
-
-
-def api_track_data(artist=None, track=None, token=None):
-    """
-    Request track data from Spotify API and compile results as a dictionary.\n
-    If no records found, None is returned.\n
-    Args:
-    - artist (string)
-    - track (string)
-    - token (string)
-    """
-
-    if not token:
-        token = get_spotify_access_token()
-
-    headers = {'Authorization': f'Bearer {token}'}
-    params = {'type': 'track', 'offset': 0, 'limit': 5}
-    query = f'artist:{artist}%20track:{track}'
-    url = f'https://api.spotify.com/v1/search?q={query}'
-
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        results = response.json()
-    except requests.exceptions.ConnectionError:
-        return None
-
-    # if requested results are valid, get API data
-    if 'tracks' in results and 'total' in results['tracks'] and results['tracks']['total'] > 0:
-
-        track_records = results['tracks']['items']
-        record_index = None
-        first_index = None
-
-        # get the index for the first acceptable record
-        for index in range(len(track_records)):
-            record = track_records[index]
-            if record['album'].keys() >= {'type', 'name', 'release_date', 'images'}:
-
-                if not first_index:
-                    first_index = index
-
-                type = record['album']['type']
-                album = record['album']['name']
-                if type == "album" and not _album_contains_bad_substrings(album):
-                    record_index = index
-                    break
-
-        # if no index was selected, validate the first record and set selected index to 0
-        if not isinstance(record_index, int):
-            record_index = first_index
-
-        # if a record index was selected, return the values for that record
-        if isinstance(record_index, int):
-            record = track_records[record_index]
-            title = record['name']
-            artist = record['artists'][0]['name']
-            album = record['album']['name']
-            date = record['album']['release_date']
-            image = record['album']['images'][0]['url']
-            return {'title': title, 'artist': artist, 'album': album, 'date': date, 'image_url': image}
-
-
-def get_track_info(mpd_dict, path, token):
-    """
-    Compile track info from all sources into a dictionary.\n
-    Dictionary elements are: title, artist, album, date, image_data, image_path and image_url.\n
-    Args:
-    - mpd_dict (dict)
-    - path (string)
-    - token (string)
-    """
-
-    def _get_clean_album_string(album):
-        """
-        Remove unwanted substrings from album string.\n
-        Args:
-        - album (string)
-        """
-
-        return re.sub(r'\s?(\(|\[)[^\)]*(edition|release|remaster|remastered)(\)|\])$', '', album, flags=re.IGNORECASE).strip()
-
-    def _get_clean_date_string(date):
-        """
-        Trim date string to a four digit year.\n
-        Args:
-        - date (string)
-        """
-
-        # if string begins with year, return first four characters
-        if date and re.match(r'^19\d{2}\D?.*$|^20\d{2}\D?.*$', date):
-            return date[0:4]
-        # else if string ends with year, return last four characters
-        elif date and re.match(r'|^.*\D19\d{2}$|^.*\D20\d{2}$', date):
-            return date[-4:]
-        else:
-            return date
-
-    props = dict()
-
-    # append data from mpd to props
-    if 'title' in mpd_dict:
-        props['title'] = mpd_dict['title']
-    if 'artist' in mpd_dict:
-        props['artist'] = mpd_dict['artist']
-    if 'album' in mpd_dict:
-        props['album'] = mpd_dict['album']
-    if 'date' in mpd_dict:
-        props['date'] = mpd_dict['date']
-
-    # if title, artist or album missing from props, append missing data from filename
-    if 'title' not in props or 'artist' not in props or 'album' not in props:
-
-        filename_dict = get_filename_dict(path)
-
-        if 'title' not in props and 'title' in filename_dict:
-            props['title'] = filename_dict['title']
-        if 'artist' not in props and 'artist' in filename_dict:
-            props['artist'] = filename_dict['artist']
-        if 'album' not in props and 'album' in filename_dict:
-            props['album'] = filename_dict['album']
-
-    # append embedded image data to props
-    props['image_data'] = get_image_data(path)
-
-    if not props['image_data']:
-        del props['image_data']
-
-    # if image data not in props, append image path
-    if 'image_data' not in props:
-
-        props['image_path'] = get_image_path(path)
-
-        if not props['image_path']:
-            del props['image_path']
-
-    # if album or image data and path missing from props
-    if 'album' not in props or ('image_data' not in props and 'image_path' not in props):
-
-        if 'artist' in props and 'album' in props:
-            api_dict = api_album_data(artist=props['artist'], album=props['album'], token=token)
-        elif 'artist' in props and 'title' in props:
-            api_dict = api_track_data(artist=props['artist'], track=props['title'], token=token)
-        else:
-            api_dict = None
-
-        # if api returned results, append missing data to props
-        if api_dict and api_dict.keys() >= {'artist', 'title', 'album', 'date', 'image_url'}:
-
-            # clear incomplete image fields from props
-            if 'image_data' in props:
-                del props['image_data']
-            if 'image_path' in props:
-                del props['image_path']
-
-            # append api results to props
-            if 'title' in api_dict:
-                props['title'] = api_dict['title']
-            props['artist'] = api_dict['artist']
-            props['album'] = api_dict['album']
-            props['date'] = api_dict['date']
-            props['image_url'] = api_dict['image_url']
-
-    # clean album name of unwanted substrings
-    if 'album' in props:
-        props['album'] = _get_clean_album_string(props['album'])
-
-    # reduce date string to year, if possible
-    if 'date' in props:
-        props['date'] = _get_clean_date_string(props['date'])
-
-    return props
-
-
-def send_notification(prog, notify_settings, props):
-    """
-    Send a notification containing track info and an album cover image.\n
-    Args:
-    - prog (string)
-    - notify_settings (tuple)
-    - props (dictionary)
-    """
-
-    def _get_notification_message(props):
-        """
-        Compile track info into a notification string.\n
-        If no track info, returns None.
-        Args:
-        - props (dictionary)
-        """
-
-        message = None
-
-        if 'title' in props:
-
-            if len(props['title']) > 36:
-                size = "x-small"
-            elif len(props['title']) > 30:
-                size = "small"
-            else:
-                size = "medium"
-
-            message = f"<span size='{size}'><b>{props['title']}</b></span>"
-
-            if 'album' in props:
-
-                if 'date' in props:
-                    line_length = len(f"by {props['album']} ({props['date']})")
-                else:
-                    line_length = len(f"by {props['album']}")
-
-                if line_length > 36:
-                    size = "x-small"
-                elif line_length > 30:
-                    size = "small"
-                else:
-                    size = "medium"
-
-                if 'date' in props:
-                    message += f"\n<span size='x-small'>on </span><span size='{size}'><b>{props['album']}</b> (<b>{props['date']}</b></span>)"
-                else:
-                    message += f"\n<span size='x-small'>on </span><span size='{size}'><b>{props['album']}</b></span>"
-
-            if 'artist' in props:
-
-                if len(props['artist']) > 36:
-                    size = "x-small"
-                elif len(props['artist']) > 30:
-                    size = "small"
-                else:
-                    size = "medium"
-
-                message += f"\n<span size='x-small'>by </span><span size='{size}'><b>{props['artist']}</b></span>"
-
-        return message
-
-    def _get_pixbuf_from_image(props, default_image=None):
-        """
-        Create a pixbuf from image data, image path or image url.\n
-        If no image, None is returned.\n
-        Args:
-        - props (dictionary)
-        - default_image (string)
-        """
-
-        if 'image_data' in props:
-            try:
-                input_stream = Gio.MemoryInputStream.new_from_data(
-                    props['image_data'], None)
-                return Pixbuf.new_from_stream(input_stream, None)
-            except Exception:
-                return None
-
-        if 'image_path' in props:
-            try:
-                return Pixbuf.new_from_file(props['image_path'])
-            except Exception:
-                return None
-
-        if 'image_url' in props:
-            try:
-                response = urllib.request.urlopen(props['image_url'])
-                input_stream = Gio.MemoryInputStream.new_from_data(
-                    response.read(), None)
-                return Pixbuf.new_from_stream(input_stream, None)
-            except Exception:
-                return None
-
-        if default_image and os.path.exists(default_image):
-            try:
-                return Pixbuf.new_from_file(default_image)
-            except Exception:
-                return None
-
-    notify_message = _get_notification_message(props)
-
-    if notify_message:
-
-        try:
-            notify2.init(prog)
-            n = notify2.Notification(prog, notify_message)
-        except dbus.exceptions.DBusException:
-            print("error: daemon not found.")
-            sys.exit(0)
-
-        if bool(notify_settings['id']):
-            n.id = notify_settings['id']
-
-            n.set_hint('desktop-entry', prog)
-            n.set_timeout(notify_settings['timeout'])
-            n.set_urgency(notify_settings['urgency'])
-
-            pixbuf = _get_pixbuf_from_image(props, notify_settings['default_image'])
-
-            if bool(pixbuf):
-                n.set_icon_from_pixbuf(pixbuf)
-
-                try:
-                    n.show()
-                except Exception:
-                    print("error: failed to send notification.")
-
-
-def get_arguments(prog=PROG):
-    """
-    Get command line arguments object.\n
-    Args:
-    - prog (string)
-    """
-
-    parser = argparse.ArgumentParser(
-        prog=prog, usage="%(prog)s [options]", description="Send notification for current MPD track.", prefix_chars='-')
-    parser.add_argument("--once", "-o", action="store_true",
-                        default=False, help="Send one notification and exit")
+    parser = argparse.ArgumentParser(prog=PROG, usage="%(prog)s [options]", description="Send notification for current MPD track.", prefix_chars='-')
+    parser.add_argument("--once", "-o", action="store_true", default=False, help="Send one notification and exit")
 
     return parser.parse_args()
 
 
-def open_mpd_connection(mpd_settings=MPD_SETTINGS):
-    """
-    Connect to an MPD server socket.\n
-    If no socket, None is returned.\n
-    Args:
-    - mpd_settings (tuple)
-    """
+def get_notify_assets(props):
 
-    client = MPDClient()
+    message = pixbuf = None
 
-    if mpd_settings['timeout']:
-        client.timeout = mpd_settings['timeout']
+    if 'title' in props:
 
-    if mpd_settings['idletimeout']:
-        client.idletimeout = mpd_settings['idleidletimeout']
+        if len(props['title']) > 36:
+            size = "x-small"
+        elif len(props['title']) > 30:
+            size = "small"
+        else:
+            size = "medium"
 
-    if mpd_settings['password']:
-        client.password(mpd_settings['password'])
+        message = f"<span size='{size}'><b>{props['title']}</b></span>"
 
-    try:
-        client.connect(mpd_settings['host'], mpd_settings['port'])
-    except ConnectionRefusedError:
-        sys.exit(
-            f"error: could not connect to {mpd_settings['host']}:{str(mpd_settings['port'])}")
+        if 'album' in props:
 
-    return client
+            if 'date' in props:
+                line_length = len(f"by {props['album']} ({props['date']})")
+            else:
+                line_length = len(f"by {props['album']}")
+
+            if line_length > 36:
+                size = "x-small"
+            elif line_length > 30:
+                size = "small"
+            else:
+                size = "medium"
+
+            if 'date' in props:
+                message += f"\n<span size='x-small'>on </span><span size='{size}'><b>{props['album']}</b> (<b>{props['date']}</b></span>)"
+            else:
+                message += f"\n<span size='x-small'>on </span><span size='{size}'><b>{props['album']}</b></span>"
+
+        if 'artist' in props:
+
+            if len(props['artist']) > 36:
+                size = "x-small"
+            elif len(props['artist']) > 30:
+                size = "small"
+            else:
+                size = "medium"
+
+            message += f"\n<span size='x-small'>by </span><span size='{size}'><b>{props['artist']}</b></span>"
+
+    if 'image_data' not in props and 'image_path' not in props and 'image_url' not in props:
+        props['image_path'] = settings['notify']['default_image']
+
+    if 'image_data' in props:
+
+        try:
+            input_stream = Gio.MemoryInputStream.new_from_data(props['image_data'], None)
+            pixbuf = Pixbuf.new_from_stream(input_stream, None)
+        except Exception:
+            pass
+
+    elif 'image_path' in props:
+
+        try:
+            pixbuf = Pixbuf.new_from_file(props['image_path'])
+        except Exception:
+            pass
+
+    elif 'image_url' in props:
+
+        try:
+            response = urllib.request.urlopen(props['image_url'])
+            input_stream = Gio.MemoryInputStream.new_from_data(response.read(), None)
+            pixbuf = Pixbuf.new_from_stream(input_stream, None)
+        except Exception:
+            pass
+
+    return message, pixbuf
 
 
-def get_music_directory():
-    """
-    Parse the path to the MPD music directory from mpd.conf.\n
-    If no directory found, None is returned.
-    """
+def get_notification(message, pixbuf):
 
-    paths = (
-        "{}/mpd/mpd.conf".format(os.getenv('XDG_CONFIG_HOME')),
-        "{}/.config/mpd/mpd.conf".format(os.getenv('HOME')),
-        "/home/{}/.config/mpd/mpd.conf".format(os.getenv('USER')),
-        "/home/{}/.config/mpd/mpd.conf".format(os.getlogin())
-    )
+    if message is not None:
 
-    for path in paths:
-        if os.path.isfile(path):
-            for line in open(path, 'r'):
-                if match(r'^music_directory\s+\".*\"$', line):
-                    return os.path.expanduser(line.strip().split()[-1].strip('\"'))
-                elif match(r'^music_directory\s+\'.*\'$', line):
-                    return os.path.expanduser(line.strip().split()[-1].strip("\'"))
+        set = settings['notify']
 
+        notify2.init(PROG)
+        obj = notify2.Notification(PROG, message)
 
-def notify_now(client, music_directory, token=None, prog=PROG, notify_settings=NOTIFY_SETTINGS):
-    """
-    Gather track info and send a notification.\n
-    None is returned.\n
-    Args:
-    - client (object)
-    - music_directory (string)
-    - token (string)
-    - prog (string)
-    - notify_settings (tuple)
-    """
+        obj.set_hint('desktop-entry', PROG)
 
-    if bool(client.currentsong()) and 'file' in client.currentsong() and 'state' in client.status() and client.status()['state'] in ("play", "pause", "stop"):
+        if set['id'] is not None:
+            obj.id = set['id']
 
-        path = os.path.join(music_directory, client.currentsong()['file'])
+        if set['timeout'] is not None:
+            obj.set_timeout(set['timeout'])
 
-        props = get_track_info(client.currentsong(), path, token)
+        if set['urgency'] is not None:
+            obj.set_urgency(set['urgency'])
 
-        if props and path == os.path.join(music_directory, client.currentsong()['file']):
-            send_notification(prog, notify_settings, props)
+        if pixbuf is not None:
+            obj.set_icon_from_pixbuf(pixbuf)
+
+        return obj
 
 
-def notify_on_change(client, music_directory, token=None, prog=PROG, notify_settings=NOTIFY_SETTINGS):
-    """
-    Monitor MPD socket and send track notifications when a new track starts or current track changes.\n
-    None is returned.\n
-    Args:
-    - client (object)
-    - music_directory (string)
-    - token (string)
-    - prog (string)
-    - notify_settings (tuple)
-    """
+def notify_user(client):
 
-    def _cancel_process(client):
-        """
-        Close MPD socket and cleanly end the process.
-        """
+    if client.currentsong() and 'file' in client.currentsong():
 
-        sys.stdout.write('\b\b\r')
-        sys.stdout.write("POOPING OUT")
+        song = SongInfo(client.currentsong())
 
-        if client:
-            client.close()
+        message, pixbuf = get_notify_assets(song.props)
 
-        sys.exit(0)
+        n = get_notification(message, pixbuf)
 
-    signal.signal(signal.SIGINT, lambda x, y: _cancel_process(client))
-    signal.signal(signal.SIGTERM, lambda x, y: _cancel_process(client))
+        if n is None or client.currentsong()['id'] != song.id:
+            return
+
+        n.show()
+
+
+def notify_on_event(client):
 
     while client.idle('player'):
-
         if client.status()['state'] == 'play':
+            notify_user(client)
 
-            notify_now(client, music_directory, token, prog, notify_settings)
 
+def main():
 
-def main(prog=PROG, mpd_settings=MPD_SETTINGS, notify_settings=NOTIFY_SETTINGS):
+    client = None
 
-    token = get_spotify_access_token()
+    signal.signal(signal.SIGINT, lambda x, y: cancel_process(client))
+    signal.signal(signal.SIGTERM, lambda x, y: cancel_process(client))
 
-    music_directory = get_music_directory()
+    global settings
+    settings = get_settings()
 
-    client = open_mpd_connection(mpd_settings)
+    global spotify_token
+    spotify_token = get_spotify_token()
 
-    arguments = get_arguments(prog)
+    client = get_mpd_client()
+
+    arguments = get_arguments()
 
     if arguments.once:
-        notify_now(client, music_directory, token, prog, notify_settings)
+        notify_user(client)
     else:
-        notify_on_change(client, music_directory, token, prog, notify_settings)
+        notify_on_event(client)
 
     client.close()
     client.disconnect()
 
 
 if __name__ == "__main__":
+    # sys.tracebacklimit = 0
     main()
