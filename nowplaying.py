@@ -38,9 +38,6 @@ class SongInfo:
 
         self.props = self.get_props(mpd_dict)
 
-        os.system('clear')
-        print(str(self.props))
-
     def __repr__(self):
         return "SongInfo('{}')".format(self.filename)
 
@@ -166,9 +163,7 @@ class SongInfo:
 
             return chunks_clean
 
-        filename = os.path.basename(self.path)
-
-        chunks = _get_split_filename(filename)
+        chunks = _get_split_filename(self.filename)
         assigned = dict()
 
         # search for track number and add it to dict
