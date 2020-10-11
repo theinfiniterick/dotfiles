@@ -15,7 +15,7 @@ import re
 import signal
 import sys
 import urllib.request
-
+import mimetypes
 import gi.repository
 import mpd
 import mutagen
@@ -36,7 +36,7 @@ class SongInfo:
         self.id = mpd_dict['id']
         self.path = os.path.join(settings['mpd']['directory'], mpd_dict['file'])
         self.filename = os.path.basename(self.path)
-
+        self.mime = mimetypes.guess_type(self.filename)
         self.props = self.get_props(mpd_dict)
 
     def __repr__(self):
@@ -66,10 +66,12 @@ class SongInfo:
             if 'album' not in props and 'album' in filename_dict:
                 props['album'] = filename_dict['album']
 
-        image_data = self.get_image_data()
+        if self.mime in ("audio/mpeg", "audio/mp4", "audio/x-flac"):
 
-        if image_data is not None:
-            props['image_data'] = image_data
+            image_data = self.get_image_data()
+
+            if image_data is not None:
+                props['image_data'] = image_data
 
         if 'image_data' not in props:
 
@@ -158,19 +160,19 @@ class SongInfo:
                 18  # Illustration
             ]
 
-            if file.mime[0] == "audio/mp3":  # mp3
+            if self.mime == "audio/mpeg":  # mp3
 
                 for type in image_types:
                     for tag in file.tags.values():
                         if tag.FrameID == 'APIC' and int(tag.type) == type:
                             return tag.data
 
-            elif file.mime[0] == "audio/mp4":  # m4a
+            elif self.mime == "audio/mp4":  # m4a
 
                 if 'covr' in file.tags.keys():
                     return file.tags['covr'][0]
 
-            elif file.mime[0] == "audio/flac":  # flac
+            elif self.mime == "audio/x-flac":  # flac
 
                 for type in image_types:
                     for tag in file.pictures:
@@ -233,14 +235,13 @@ class SongInfo:
             'greatest hits',
             'collection',
             'b-sides',
-            'classics'
+            'classics',
+            'live in'
         )
 
         return any([substring in album.lower() for substring in subsubstrings])
 
     def api_album_data(self, artist, album):
-
-        artist, album = self.props['artist'], self.props['album']
 
         headers = {'Authorization': f'Bearer {spotify_token}'}
         params = {'type': 'album', 'offset': 0, 'limit': 5}
