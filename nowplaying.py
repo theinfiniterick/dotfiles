@@ -9,6 +9,7 @@ TODO: get_image_path - _get_folder_image - add all valid cover art filenames
 
 import argparse
 import configparser
+import dateutil.parser
 import os.path
 import re
 import signal
@@ -43,21 +44,6 @@ class SongInfo:
 
     def get_props(self, mpd_dict):
 
-        def _get_clean_album_string(album):
-
-            return re.sub(r'\s?(\(|\[)[^\)]*(edition|release|remaster|remastered)(\)|\])$', '', album, flags=re.IGNORECASE).strip()
-
-        def _get_clean_date_string(date):
-
-            # if string begins with year, return first four characters
-            if date and re.match(r'^19\d{2}\D?.*$|^20\d{2}\D?.*$', date):
-                return date[0:4]
-            # else if string ends with year, return last four characters
-            elif date and re.match(r'|^.*\D19\d{2}$|^.*\D20\d{2}$', date):
-                return date[-4:]
-            else:
-                return date
-
         props = dict()
 
         if 'title' in mpd_dict:
@@ -80,17 +66,17 @@ class SongInfo:
             if 'album' not in props and 'album' in filename_dict:
                 props['album'] = filename_dict['album']
 
-        props['image_data'] = self.get_image_data()
+        image_data = self.get_image_data()
 
-        if props['image_data'] is None:
-            del props['image_data']
+        if image_data is not None:
+            props['image_data'] = image_data
 
         if 'image_data' not in props:
 
-            props['image_path'] = self.get_image_path()
+            image_path = self.get_image_path()
 
-            if props['image_path'] is None:
-                del props['image_path']
+            if image_path is not None:
+                props['image_path'] = image_path
 
         if 'album' not in props or ('image_data' not in props and 'image_path' not in props):
 
@@ -108,81 +94,53 @@ class SongInfo:
                 if 'image_path' in props:
                     del props['image_path']
 
-                if 'title' in api_dict:
-                    props['title'] = api_dict['title']
                 props['artist'] = api_dict['artist']
                 props['album'] = api_dict['album']
                 props['date'] = api_dict['date']
                 props['image_url'] = api_dict['image_url']
 
         if 'album' in props:
-            props['album'] = _get_clean_album_string(props['album'])
+            regex = r'\s?(\(|\[)[^\)]*(edition|release|remaster|remastered)(\)|\])$'
+            props['album'] = re.sub(regex, '', props['album'], flags=re.IGNORECASE).strip()
 
         if 'date' in props:
-            props['date'] = _get_clean_date_string(props['date'])
+            props['date'] = dateutil.parser.parse(props['date']).year
 
         return props
 
     def get_filename_dict(self):
 
-        def _get_split_filename(filename):
+        # get filename without extension
+        string = os.path.splitext(self.filename)[0]
 
-            # get filename without extension
-            string = os.path.splitext(filename)[0]
+        # split values into list
+        regex = r"\s+-\s+|(?<=^\d{1})\.\s+|(?<=^\d{2})\.\s+|(?<=\s{1}\d{1})\.\s+|(?<=\s{1}\d{2})\.\s+"
+        values = re.split(regex, string)
 
-            # declare patterns to protect from split
-            ignore_patterns = [
-                {'initial': 'Ep. ', 'replace': '((EPDOT))'},
-                {'initial': 'Dr. ', 'replace': '((DOCTORDOT))'},
-                {'initial': 'Jr. ', 'replace': '((JUNIORDOT))'},
-                {'initial': 'Sr. ', 'replace': '((SENIORDOT))'},
-                {'initial': 'Mr. ', 'replace': '((MISTERDOT))'},
-                {'initial': 'Ms. ', 'replace': '((MISSDOT))'},
-                {'initial': 'Mrs. ', 'replace': '((MISSESDOT))'},
-                {'initial': 'Vol. ', 'replace': '((VOLDOT))'}
-            ]
+        # strip trailing/leading spaces
+        values = [val.strip(' ') for val in values]
 
-            # replace protected patterns so prevent splitting
-            for i in range(len(ignore_patterns)):
-                string = string.replace(
-                    ignore_patterns[i]['initial'], ignore_patterns[i]['replace'])
-
-            # modify substrings deemed split points to match split regex
-            string = re.sub(r"(?<=^\d{2})\.\s+", " - ", string)
-
-            # split filename into chunks
-            chunks_dirty = re.split(r'\s+-\s+', string)
-
-            # replace protected patterns with original values
-            chunks_clean = []
-            for chunk in chunks_dirty:
-                for i in range(len(ignore_patterns)):
-                    chunk = chunk.replace(
-                        ignore_patterns[i]['replace'], ignore_patterns[i]['initial'])
-                chunks_clean.append(chunk.strip())
-
-            return chunks_clean
-
-        chunks = _get_split_filename(self.filename)
         assigned = dict()
 
-        # search for track number and add it to dict
-        for chunk in chunks:
-            if re.match(r'^\d{1,2}$', chunk):
-                assigned['track'] = chunk
-                chunks.remove(chunk)
+        # search list for a 1-2 digit value, then add it to assigned
+        # as a track number and remove the value from the list
+        for val in values:
+            if re.match(r'^\d{1,2}$', val):
+                assigned['track'] = val
+                values.remove(val)
                 break
 
-        # remove extra chunks from start of list
-        if len(chunks) > 3:
-            chunks = chunks[-3:]
+        # if list contains more than 3 values, trim
+        # extra values from the start of the list
+        if len(values) > 3:
+            values = values[-3:]
 
-        if len(chunks) == 3:
-            assigned['artist'], assigned['album'], assigned['title'] = chunks
-        elif len(chunks) == 2:
-            assigned['artist'], assigned['title'] = chunks
-        elif len(chunks) == 1:
-            assigned['title'] = chunks[0]
+        if len(values) == 3:
+            assigned['artist'], assigned['album'], assigned['title'] = values
+        elif len(values) == 2:
+            assigned['artist'], assigned['title'] = values
+        elif len(values) == 1:
+            assigned['title'] = values[0]
 
         return assigned
 
@@ -190,11 +148,9 @@ class SongInfo:
 
         file = mutagen.File(self.path)
 
-        # if a valid file with valid tags was found, proceed
         if file and file.tags and len(file.tags.values()) > 0:
 
-            # declare acceptable values for embedded image tag.type
-            types = [
+            image_types = [
                 3,  # Cover (front)
                 2,  # Other file icon
                 1,  # PictureType.FILE_ICON
@@ -202,24 +158,21 @@ class SongInfo:
                 18  # Illustration
             ]
 
-            # mp3
-            if file.mime[0] == "audio/mp3":
+            if file.mime[0] == "audio/mp3":  # mp3
 
-                for type in types:
+                for type in image_types:
                     for tag in file.tags.values():
                         if tag.FrameID == 'APIC' and int(tag.type) == type:
                             return tag.data
 
-            # m4a
-            elif file.mime[0] == "audio/mp4":
+            elif file.mime[0] == "audio/mp4":  # m4a
 
                 if 'covr' in file.tags.keys():
                     return file.tags['covr'][0]
 
-            # flac
-            elif file.mime[0] == "audio/flac":
+            elif file.mime[0] == "audio/flac":  # flac
 
-                for type in types:
+                for type in image_types:
                     for tag in file.pictures:
                         if tag.type == type:
                             return tag.data
@@ -229,16 +182,11 @@ class SongInfo:
         def _get_folder_image(folder):
 
             filenames = [
-                'cover',
-                'Cover',
-                'front',
-                'Front',
-                'folder',
-                'Folder',
-                'thumb',
-                'Thumb',
-                'album',
-                'Album',
+                'cover', 'Cover',
+                'front', 'Front',
+                'folder', 'Folder',
+                'thumb', 'Thumb',
+                'album', 'Album',
                 'albumart',
                 'AlbumArt',
                 'albumartsmall',
@@ -246,14 +194,8 @@ class SongInfo:
             ]
 
             extensions = [
-                'png',
-                'jpg',
-                'jpeg',
-                'gif',
-                'bmp',
-                'tif',
-                'tiff',
-                'svg'
+                'png', 'jpg', 'jpeg', 'gif',
+                'bmp', 'tif', 'tiff', 'svg'
             ]
 
             for name in filenames:
@@ -286,9 +228,15 @@ class SongInfo:
 
     def _album_contains_bad_substrings(self, album):
 
-        unwanted_substrings = ('best of', 'greatest hits', 'collection', 'b-sides', 'classics')
+        subsubstrings = (
+            'best of',
+            'greatest hits',
+            'collection',
+            'b-sides',
+            'classics'
+        )
 
-        return any([substring in album.lower() for substring in unwanted_substrings])
+        return any([substring in album.lower() for substring in subsubstrings])
 
     def api_album_data(self, artist, album):
 
