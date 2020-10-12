@@ -1,9 +1,5 @@
 #!/usr/bin/python
 
-"""
-TODO: Get settings from mpd.conf for settings['mpd'] default values.
-"""
-
 import argparse
 import configparser
 import json
