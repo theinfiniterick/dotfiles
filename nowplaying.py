@@ -1,21 +1,20 @@
 #!/usr/bin/python
 
 """
-TODO: Move Spotify API auth data to config
-TODO: get_image_data - add code for wma, wav, ogg
-TODO: get_image_path - folder_name_patterns - perfect patterns for numbers as digits and strings
-TODO: get_image_path - _get_folder_image - add all valid cover art filenames
+TODO: Get settings from mpd.conf for settings['mpd'] default values.
 """
 
 import argparse
 import configparser
-import dateutil.parser
+import json
+import mimetypes
 import os.path
 import re
 import signal
 import sys
 import urllib.request
-import mimetypes
+
+import dateutil.parser
 import gi.repository
 import mpd
 import mutagen
@@ -34,9 +33,11 @@ class SongInfo:
     def __init__(self, mpd_dict):
 
         self.id = mpd_dict['id']
+
         self.path = os.path.join(settings['mpd']['directory'], mpd_dict['file'])
         self.filename = os.path.basename(self.path)
-        self.mime = mimetypes.guess_type(self.filename)
+        self.mimetype = mimetypes.guess_type(self.filename)
+
         self.props = self.get_props(mpd_dict)
 
     def __repr__(self):
@@ -55,7 +56,7 @@ class SongInfo:
         if 'date' in mpd_dict:
             props['date'] = mpd_dict['date']
 
-        if 'title' not in props or 'artist' not in props or 'album' not in props:
+        if props.keys() < {'title', 'artist', 'album'}:
 
             filename_dict = self.get_filename_dict()
 
@@ -66,7 +67,7 @@ class SongInfo:
             if 'album' not in props and 'album' in filename_dict:
                 props['album'] = filename_dict['album']
 
-        if self.mime in ("audio/mpeg", "audio/mp4", "audio/x-flac"):
+        if self.mimetype in ('audio/mpeg', 'audio/mp4', 'audio/x-flac'):
 
             image_data = self.get_image_data()
 
@@ -80,7 +81,7 @@ class SongInfo:
             if image_path is not None:
                 props['image_path'] = image_path
 
-        if 'album' not in props or ('image_data' not in props and 'image_path' not in props):
+        if 'token' in settings['spotify'] and ('album' not in props or ('image_data' not in props and 'image_path' not in props)):
 
             if 'artist' in props and 'album' in props:
                 api_dict = self.api_album_data(props['artist'], props['album'])
@@ -89,7 +90,7 @@ class SongInfo:
             else:
                 api_dict = None
 
-            if api_dict and api_dict.keys() >= {'artist', 'title', 'album', 'date', 'image_url'}:
+            if api_dict and api_dict.keys() >= {'artist', 'album', 'date', 'image_url'}:
 
                 if 'image_data' in props:
                     del props['image_data']
@@ -112,28 +113,21 @@ class SongInfo:
 
     def get_filename_dict(self):
 
-        # get filename without extension
         string = os.path.splitext(self.filename)[0]
 
-        # split values into list
         regex = r"\s+-\s+|(?<=^\d{1})\.\s+|(?<=^\d{2})\.\s+|(?<=\s{1}\d{1})\.\s+|(?<=\s{1}\d{2})\.\s+"
         values = re.split(regex, string)
 
-        # strip trailing/leading spaces
         values = [val.strip(' ') for val in values]
 
         assigned = dict()
 
-        # search list for a 1-2 digit value, then add it to assigned
-        # as a track number and remove the value from the list
         for val in values:
             if re.match(r'^\d{1,2}$', val):
                 assigned['track'] = val
                 values.remove(val)
                 break
 
-        # if list contains more than 3 values, trim
-        # extra values from the start of the list
         if len(values) > 3:
             values = values[-3:]
 
@@ -160,19 +154,19 @@ class SongInfo:
                 18  # Illustration
             ]
 
-            if self.mime == "audio/mpeg":  # mp3
+            if self.mimetype == "audio/mpeg":  # mp3
 
                 for type in image_types:
                     for tag in file.tags.values():
                         if tag.FrameID == 'APIC' and int(tag.type) == type:
                             return tag.data
 
-            elif self.mime == "audio/mp4":  # m4a
+            elif self.mimetype == "audio/mp4":  # m4a
 
                 if 'covr' in file.tags.keys():
                     return file.tags['covr'][0]
 
-            elif self.mime == "audio/x-flac":  # flac
+            elif self.mimetype == "audio/x-flac":  # flac
 
                 for type in image_types:
                     for tag in file.pictures:
@@ -207,10 +201,7 @@ class SongInfo:
                         return path
 
         folder_name_patterns = [
-            r'^disc\s?\d+.*$',
-            r'^cd\s?\d+.*$',
-            r'^dvd\s?\d+.*$',
-            r'^set\s?\d+.*$',
+            r'^disc\s?.*$|^cd\s?.*$|^dvd\s?.*$|^set\s?.*$',
             os.path.basename(os.path.dirname(self.path)),
             os.path.splitext(self.path)[-1].lstrip('.')
         ]
@@ -218,7 +209,7 @@ class SongInfo:
         folder_path = os.path.dirname(self.path)
         folder_name = os.path.basename(folder_path)
 
-        while re.match("|".join(folder_name_patterns), folder_name.lower()):
+        while re.match("|".join(folder_name_patterns), folder_name, re.IGNORECASE):
 
             image_path = _get_folder_image(folder_path)
 
@@ -228,22 +219,12 @@ class SongInfo:
             folder_path = os.path.abspath(os.path.join(folder_path, os.pardir))
             folder_name = os.path.basename(folder_path)
 
-    def _album_contains_bad_substrings(self, album):
-
-        subsubstrings = (
-            'best of',
-            'greatest hits',
-            'collection',
-            'b-sides',
-            'classics',
-            'live in'
-        )
-
-        return any([substring in album.lower() for substring in subsubstrings])
-
     def api_album_data(self, artist, album):
 
-        headers = {'Authorization': f'Bearer {spotify_token}'}
+        if 'token' not in settings['spotify']:
+            return None
+
+        headers = {'Authorization': f"Bearer {settings['spotify']['token']}"}
         params = {'type': 'album', 'offset': 0, 'limit': 5}
         query = f'artist:{artist}%20album:{album}'
         url = f'https://api.spotify.com/v1/search?q={query}'
@@ -257,6 +238,7 @@ class SongInfo:
         # if requested results are valid, get API data
         if 'albums' in results and 'total' in results['albums'] and results['albums']['total'] > 0:
 
+            bad_patterns = re.compile(r'best of|greatest hits|collection|b-sides|classics|live', flags=re.IGNORECASE)
             album_records = results['albums']['items']
             record_index = None
             first_index = None
@@ -271,7 +253,8 @@ class SongInfo:
 
                     album = record['name']
                     type = record['album_type']
-                    if type == "album" and not self._album_contains_bad_substrings(album):
+
+                    if type == "album" and not bad_patterns.search(album):
                         record_index = index
                         break
 
@@ -290,7 +273,10 @@ class SongInfo:
 
     def api_track_data(self, artist, track):
 
-        headers = {'Authorization': f'Bearer {spotify_token}'}
+        if 'token' not in settings['spotify']:
+            return None
+
+        headers = {'Authorization': f"Bearer {settings['spotify']['token']}"}
         params = {'type': 'track', 'offset': 0, 'limit': 5}
         query = f'artist:{artist}%20track:{track}'
         url = f'https://api.spotify.com/v1/search?q={query}'
@@ -304,6 +290,7 @@ class SongInfo:
         # if requested results are valid, get API data
         if 'tracks' in results and 'total' in results['tracks'] and results['tracks']['total'] > 0:
 
+            bad_patterns = re.compile(r'best of|greatest hits|collection|b-sides|classics|live', flags=re.IGNORECASE)
             track_records = results['tracks']['items']
             record_index = None
             first_index = None
@@ -318,7 +305,7 @@ class SongInfo:
 
                     type = record['album']['type']
                     album = record['album']['name']
-                    if type == "album" and not self._album_contains_bad_substrings(album):
+                    if type == "album" and not bad_patterns.search(album):
                         record_index = index
                         break
 
@@ -349,7 +336,7 @@ def cancel_process(client=None):
 
 def get_settings():
 
-    def _music_directory():
+    def _mpd_conf_values():
 
         path_list = (
             "{}/mpd/mpd.conf".format(os.getenv('XDG_CONFIG_HOME')),
@@ -358,13 +345,51 @@ def get_settings():
             "/home/{}/.config/mpd/mpd.conf".format(os.getlogin())
         )
 
+        data = dict()
+
         for path in path_list:
+
             if os.path.isfile(path):
+
+                # loop lines of mpd.conf
                 for line in open(path, 'r'):
-                    if re.match(r'^music_directory\s+\".*\"$', line):
-                        return os.path.expanduser(line.strip().split()[-1].strip('\"'))
-                    elif re.match(r'^music_directory\s+\'.*\'$', line):
-                        return os.path.expanduser(line.strip().split()[-1].strip("\'"))
+
+                    # strip line breaks
+                    line = line.strip()
+
+                    # if line is not a comment or blank
+                    if not line.startswith('#') and line != "":
+
+                        # split line into list
+                        line_arr = line.split()
+
+                        # if line list contains field and value
+                        if len(line_arr) == 2:
+
+                            field = line_arr[0]
+                            value = line_arr[1].strip('\"').strip('\'')
+
+                            # if field is music_directory
+                            if field == "music_directory":
+                                data['directory'] = os.path.expanduser(value)
+                            # if field is bind_to_address and value is a valid ip
+                            elif field == "bind_to_address" and re.match(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}', value):
+                                data['host'] = value
+                            # if field is port
+                            elif field == "port":
+                                data['port'] = int(value)
+                            # if field is password
+                            elif field == "password":
+                                data['password'] = value
+
+        if 'host' not in data:
+            data['host'] = '127.0.0.1'
+        if 'port' not in data:
+            data['port'] = 6600
+        if 'password' not in data:
+            data['password'] = None
+
+        return data
 
     def _config_path():
 
@@ -402,21 +427,25 @@ def get_settings():
 
         return new_dict
 
+    mpd_conf_dict = _mpd_conf_values()
+
     # dictionary of fields expected to be in config
     expected_data = {
         'mpd': [
-            {'name': 'directory', 'type': 'str', 'default': _music_directory()},
-            {'name': 'host', 'type': 'str', 'default': 'localhost'},
-            {'name': 'port', 'type': 'int', 'default': 6600},
-            {'name': 'password', 'type': 'str', 'default': None},
-            {'name': 'timeout', 'type': 'int', 'default': None},
-            {'name': 'idletimeout', 'type': 'int', 'default': None}
+            {'name': 'directory', 'type': 'str', 'default': mpd_conf_dict['directory']},
+            {'name': 'host', 'type': 'str', 'default': mpd_conf_dict['host']},
+            {'name': 'port', 'type': 'int', 'default': mpd_conf_dict['port']},
+            {'name': 'password', 'type': 'str', 'default': mpd_conf_dict['password']}
         ],
         'notify': [
             {'name': 'default_image', 'type': 'str', 'default': None},
             {'name': 'id', 'type': 'int', 'default': None},
             {'name': 'timeout', 'type': 'int', 'default': None},
             {'name': 'urgency', 'type': 'int', 'default': None}
+        ],
+        'spotify': [
+            {'name': 'client_id', 'type': 'str', 'default': None},
+            {'name': 'client_secret', 'type': 'str', 'default': None}
         ]
     }
 
@@ -477,25 +506,24 @@ def get_settings():
                 new_dict[section] = new_section_dict
 
         if not os.path.isdir(new_dict['mpd']['directory']):
-            new_dict['mpd']['directory'] = _music_directory()
+            new_dict['mpd']['directory'] = _mpd_conf_values(['directory'])
 
-        if not os.path.isfile(new_dict['notify']['default_image']):
+        if new_dict['notify']['default_image'] is None or not os.path.isfile(new_dict['notify']['default_image']):
             new_dict['notify']['default_image'] = None
+
+        if 'client_id' in new_dict['spotify'] and 'client_secret' in new_dict['spotify']:
+            token = get_spotify_token(new_dict['spotify']['client_id'], new_dict['spotify']['client_secret'])
+            if token is not None:
+                new_dict['spotify']['token'] = token
 
         return new_dict
 
 
-def get_mpd_client():
+def get_client():
 
     set = settings['mpd']
 
     obj = mpd.MPDClient()
-
-    if set['timeout']:
-        obj.timeout = set['timeout']
-
-    if set['idletimeout']:
-        obj.idletimeout = set['idletimeout']
 
     if set['password']:
         obj.password(set['password'])
@@ -509,20 +537,36 @@ def get_mpd_client():
     return obj
 
 
-def get_spotify_token():
+def get_spotify_token(client_id=None, client_secret=None):
+    """
+    Request API token from Spotify.\n
+    If no valid token, None is returned.\n
+    Args:
+    - client_id (str)
+    - client_secret (str)
+    """
 
-    access_token = None
+    if client_id is None or client_secret is None:
+        return None
 
-    auth_response = requests.post('https://accounts.spotify.com/api/token', {
-        'grant_type': 'client_credentials',
-        'client_id': '3ad71cf0ae544e7e935927e5d9a5cbad',
-        'client_secret': '862905d9380645a9ba29789308d795d5',
-    })
-
-    auth_response_data = auth_response.json()
-    access_token = auth_response_data['access_token']
-
-    return access_token
+    try:
+        auth_response = requests.post('https://accounts.spotify.com/api/token', {
+            'grant_type': 'client_credentials',
+            'client_id': client_id,
+            'client_secret': client_secret
+        })
+        auth_response_data = auth_response.json()
+    except requests.exceptions.ConnectionError:
+        print("error: failed to connect to spotify for authorization.")
+    except json.decoder.JSONDecodeError:
+        print("error: failed to read valid response from spotify.")
+    else:
+        if 'access_token' in auth_response_data:
+            access_token = auth_response_data['access_token']
+            if access_token is not None:
+                return access_token
+        else:
+            print("error: spotify did not return a valid token.")
 
 
 def get_arguments():
@@ -533,9 +577,9 @@ def get_arguments():
     return parser.parse_args()
 
 
-def get_notify_assets(props):
+def get_notify_message(props):
 
-    message = pixbuf = None
+    message = None
 
     if 'title' in props:
 
@@ -578,6 +622,13 @@ def get_notify_assets(props):
 
             message += f"\n<span size='x-small'>by </span><span size='{size}'><b>{props['artist']}</b></span>"
 
+    return message
+
+
+def get_notify_pixbuf(props):
+
+    pixbuf = None
+
     if 'image_data' not in props and 'image_path' not in props and 'image_url' not in props:
         props['image_path'] = settings['notify']['default_image']
 
@@ -605,7 +656,7 @@ def get_notify_assets(props):
         except Exception:
             pass
 
-    return message, pixbuf
+    return pixbuf
 
 
 def get_notification(message, pixbuf):
@@ -615,7 +666,11 @@ def get_notification(message, pixbuf):
         set = settings['notify']
 
         notify2.init(PROG)
-        obj = notify2.Notification(PROG, message)
+
+        if pixbuf is None:
+            obj = notify2.Notification(PROG, message, icon='library-music')
+        else:
+            obj = notify2.Notification(PROG, message)
 
         obj.set_hint('desktop-entry', PROG)
 
@@ -640,14 +695,16 @@ def notify_user(client):
 
         song = SongInfo(client.currentsong())
 
-        message, pixbuf = get_notify_assets(song.props)
+        message = get_notify_message(song.props)
 
-        n = get_notification(message, pixbuf)
+        if message is not None:
 
-        if n is None or client.currentsong()['id'] != song.id:
-            return
+            pixbuf = get_notify_pixbuf(song.props)
 
-        n.show()
+            n = get_notification(message, pixbuf)
+
+            if n is not None or client.currentsong()['id'] == song.id:
+                n.show()
 
 
 def notify_on_event(client):
@@ -667,10 +724,7 @@ def main():
     global settings
     settings = get_settings()
 
-    global spotify_token
-    spotify_token = get_spotify_token()
-
-    client = get_mpd_client()
+    client = get_client()
 
     arguments = get_arguments()
 
@@ -684,5 +738,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # sys.tracebacklimit = 0
     main()
