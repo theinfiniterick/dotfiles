@@ -114,7 +114,7 @@ class SongInfo:
         regex = r"\s+-\s+|(?<=^\d{1})\.\s+|(?<=^\d{2})\.\s+|(?<=\s{1}\d{1})\.\s+|(?<=\s{1}\d{2})\.\s+"
         values = re.split(regex, string)
 
-        values = [val.strip(' ') for val in values]
+        values = [val.strip() for val in values]
 
         assigned = dict()
 
@@ -332,7 +332,7 @@ def cancel_process(client=None):
 
 def get_settings():
 
-    def _mpd_conf_values():
+    def _mpd_conf_data():
 
         path_list = (
             "{}/mpd/mpd.conf".format(os.getenv('XDG_CONFIG_HOME')),
@@ -423,7 +423,7 @@ def get_settings():
 
         return new_dict
 
-    mpd_conf_dict = _mpd_conf_values()
+    mpd_conf_dict = _mpd_conf_data()
 
     # dictionary of fields expected to be in config
     expected_data = {
@@ -502,7 +502,7 @@ def get_settings():
                 new_dict[section] = new_section_dict
 
         if not os.path.isdir(new_dict['mpd']['directory']):
-            new_dict['mpd']['directory'] = _mpd_conf_values(['directory'])
+            new_dict['mpd']['directory'] = _mpd_conf_data(['directory'])
 
         if new_dict['notify']['default_image'] is None or not os.path.isfile(new_dict['notify']['default_image']):
             new_dict['notify']['default_image'] = None
