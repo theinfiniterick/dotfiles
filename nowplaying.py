@@ -20,6 +20,9 @@ from gi.repository import Gio
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository.GdkPixbuf import Pixbuf
 
+from pprint import pprint
+
+
 PROG = "nowplaying"
 
 
@@ -51,86 +54,69 @@ class SongInfo:
 
         props = dict()
 
+        # append data from mpd
         if 'title' in mpd_dict:
             props['title'] = mpd_dict['title']
-            print(f"props['title'] = mpd_dict['title'] = {mpd_dict['title']}")
         if 'artist' in mpd_dict:
             props['artist'] = mpd_dict['artist']
-            print(f"props['artist'] = mpd_dict['artist'] = {mpd_dict['artist']}")
         if 'album' in mpd_dict:
             props['album'] = mpd_dict['album']
-            print(f"props['album'] = mpd_dict['album'] = {mpd_dict['album']}")
         if 'date' in mpd_dict:
             props['date'] = mpd_dict['date']
-            print(f"props['date'] = mpd_dict['date'] = {mpd_dict['date']}")
 
+        # append missing data from filename
         if props.keys() < {'title', 'artist', 'album'}:
 
             filename_dict = self.get_filename_dict()
 
             if 'title' not in props and 'title' in filename_dict:
                 props['title'] = filename_dict['title']
-                print(f"props['title'] = filename_dict['title'] = {filename_dict['title']}")
             if 'artist' not in props and 'artist' in filename_dict:
                 props['artist'] = filename_dict['artist']
-                print(f"props['artist'] = filename_dict['artist'] = {filename_dict['artist']}")
             if 'album' not in props and 'album' in filename_dict:
                 props['album'] = filename_dict['album']
-                print(f"props['album'] = filename_dict['album'] = {filename_dict['album']}")
 
+        # append pixbuf from embedded data
         if self.mimetype in ('audio/mpeg', 'audio/mp4', 'audio/x-flac'):
 
             pixbuf = self.get_pixbuf_from_embedded()
 
             if pixbuf is not None:
                 props['pixbuf'] = pixbuf
-                print("props['pixbuf'] = data")
 
+        # append missing pixbuf from image file
         if 'pixbuf' not in props:
 
-            pixbuf = self.get_pixbuf_from_path()
+            pixbuf = self.get_pixbuf_from_file()
 
             if pixbuf is not None:
                 props['pixbuf'] = pixbuf
-                print("props['pixbuf'] = path")
 
+        # append missing data and pixbuf from from spotify api
         if settings['spotify']['token'] is not None and ('album' not in props or 'pixbuf' not in props):
 
             if 'artist' in props and 'album' in props:
-                api_dict = self.get_api_album(props['artist'], props['album'])
-                print(f"api_dict = self.get_api_album('{props['artist']}', '{props['album']}')")
+                api_dict = self.get_api_data(artist=props['artist'], album=props['album'])
             elif 'artist' in props and 'title' in props:
-                api_dict = self.get_api_track(props['artist'], props['title'])
-                print(f"api_dict = self.get_api_track('{props['artist']}', '{props['title']}')")
+                api_dict = self.get_api_data(artist=props['artist'], track=props['title'])
             else:
                 api_dict = None
 
-            if api_dict and api_dict.keys() >= {'artist', 'album', 'date', 'pixbuf'}:
-
+            if api_dict is not None and api_dict.keys() >= {'artist', 'album', 'date', 'pixbuf'}:
                 props['artist'] = api_dict['artist']
-                print(f"props['artist'] = api_dict['artist'] = {api_dict['artist']}")
                 props['album'] = api_dict['album']
-                print(f"props['album'] = api_dict['album'] = {api_dict['album']}")
                 props['date'] = api_dict['date']
-                print(f"props['date'] = api_dict['date'] = {api_dict['date']}")
                 props['pixbuf'] = api_dict['pixbuf']
-                print(f"props['pixbuf'] = api_dict['pixbuf'] = {api_dict['pixbuf']}")
 
+        # clean album and date values
         if 'album' in props:
             props['album'] = _clean_album(props['album'])
-            print(f"post clean album = {props['album']}")
-
         if 'date' in props:
             props['date'] = _clean_date(props['date'])
-            print(f"post clean date = {props['date']}")
 
+        # if no pixbuf set value to None
         if 'pixbuf' not in props:
-            if settings['notify']['default_image'] is not None:
-                props['pixbuf'] = settings['notify']['default_image']
-                print("props['pixbuf'] = settings['notify']['default_image']")
-            else:
-                props['pixbuf'] = None
-                print("props['pixbuf'] = None")
+            props['pixbuf'] = None
 
         return props
 
@@ -189,7 +175,7 @@ class SongInfo:
                     input_stream = Gio.MemoryInputStream.new_from_data(file.tags['covr'][0], None)
                     return Pixbuf.new_from_stream(input_stream, None)
 
-    def get_pixbuf_from_path(self):
+    def get_pixbuf_from_file(self):
 
         filenames = [
             'cover', 'Cover', 'front', 'Front',
@@ -205,7 +191,7 @@ class SongInfo:
 
         folder = os.path.dirname(self.path)
 
-        while folder != settings['mpd']['directory']:
+        while folder not in (settings['mpd']['directory']):
 
             for name in filenames:
                 for ext in extensions:
@@ -218,17 +204,18 @@ class SongInfo:
     def query_api(self, artist=None, album=None, track=None):
 
         headers = {'Authorization': 'Bearer {}'.format(settings['spotify']['token'])}
+        type = None
 
         if None not in (artist, album):
-            params = {'type': 'album', 'offset': 0, 'limit': 10}
+            type = 'album'
+            params = {'type': type, 'offset': 0, 'limit': 10}
             url = "https://api.spotify.com/v1/search?q=artist:{} AND album:{}".format(artist, album)
         elif None not in (artist, track):
-            params = {'type': 'track', 'offset': 0, 'limit': 10}
+            type = 'track'
+            params = {'type': type, 'offset': 0, 'limit': 10}
             url = "https://api.spotify.com/v1/search?q=artist:{} AND track:{}".format(artist, track)
-        else:
-            url, params = None, None
 
-        if None not in (url, params):
+        if type is not None:
 
             try:
                 api_response = requests.get(url, headers=headers, params=params)
@@ -242,21 +229,14 @@ class SongInfo:
 
             api_data = api_response.json()
 
-            if album is not None:
+            if type == 'album' and api_data['albums']['total'] == 0:
+                print("warning: no api results for artist:{}, album:{}.".format(artist, album))
+                return None
+            elif type == 'track' and api_data['tracks']['total'] == 0:
+                print("warning: no api results for artist:{}, track:{}.".format(artist, track))
+                return None
 
-                if api_data['albums']['total'] == 0:
-                    print("warning: no api results for artist:{}, album:{}.".format(artist, album))
-                    return None
-
-                return api_data['albums']['items']
-
-            elif track is not None:
-
-                if api_data['tracks']['total'] == 0:
-                    print("warning: no api results for artist:{}, album:{}.".format(artist, album))
-                    return None
-
-                return api_data['tracks']['items']
+            return api_data[f'{type}s']['items']
 
     def get_pixbuf_from_url(self, url):
 
@@ -273,58 +253,47 @@ class SongInfo:
             input_stream = Gio.MemoryInputStream.new_from_data(response.content, None)
             return Pixbuf.new_from_stream(input_stream, None)
 
-    def get_api_album(self, artist, album):
+    def get_api_data(self, artist=None, album=None, track=None):
 
-        api_albums = self.query_api(artist=artist, album=album)
+        if artist is not None and album is not None:
+            type = 'album'
+            api_results = self.query_api(artist=artist, album=album)
+        if artist is not None and track is not None:
+            type = 'track'
+            api_results = self.query_api(artist=artist, track=track)
 
-        if api_albums is None:
+        if api_results is None:
             return None
 
         bad_patterns = re.compile(r'best of|greatest hits|collection|b-sides|classics|live', flags=re.IGNORECASE)
+
         selected_index = 0
-        for index in range(len(api_albums)):
-            album = api_albums[index]['name']
+
+        for index in range(len(api_results)):
+
+            if type == 'album':
+                album = api_results[index]['name']
+            elif type == 'track':
+                album = api_results[index]['album']['name']
+
             if not bad_patterns.search(album):
                 selected_index = index
                 break
 
-        selected_album = api_albums[selected_index]
+        artist = api_results[selected_index]['artists'][0]['name']
 
-        artist = selected_album['artists'][0]['name']
-        album = selected_album['name']
-        date = selected_album['release_date']
-        image = selected_album['images'][0]['url']
+        if type == 'album':
+            selected_record = api_results[selected_index]
+        elif type == 'track':
+            selected_record = api_results[selected_index]['album']
+
+        album = selected_record['name']
+        date = selected_record['release_date']
+        image = selected_record['images'][0]['url']
 
         pixbuf = self.get_pixbuf_from_url(image)
 
         return {'artist': artist, 'album': album, 'date': date, 'pixbuf': pixbuf}
-
-    def get_api_track(self, artist, track):
-
-        api_tracks = self.query_api(artist=artist, track=track)
-
-        if api_tracks is None:
-            return None
-
-        bad_patterns = re.compile(r'best of|greatest hits|collection|b-sides|classics|live', flags=re.IGNORECASE)
-        selected_index = 0
-        for index in range(len(api_tracks)):
-            album = api_tracks[index]['album']['name']
-            if not bad_patterns.search(album):
-                selected_index = index
-                break
-
-        selected_track = api_tracks[selected_index]
-
-        title = selected_track['name']
-        artist = selected_track['artists'][0]['name']
-        album = selected_track['album']['name']
-        date = selected_track['album']['release_date']
-        image = selected_track['album']['images'][0]['url']
-
-        pixbuf = self.get_pixbuf_from_url(image)
-
-        return {'title': title, 'artist': artist, 'album': album, 'date': date, 'pixbuf': pixbuf}
 
 
 def get_settings():
@@ -485,7 +454,7 @@ def get_settings():
     return data
 
 
-def cancel_process(client=None):
+def cancel_process(client):
 
     sys.stdout.write('\b\b\r')
 
@@ -511,7 +480,7 @@ def get_client():
 
     obj.timeout = 10
 
-    if password:
+    if password is not None:
         obj.password(password)
 
     try:
@@ -576,39 +545,39 @@ def get_notification(message, pixbuf):
 
     if message is not None:
 
-        set = settings['notify']
+        default_image, id, timeout, urgency = list(settings['notify'].values())
 
         notify2.init(PROG)
-
-        if pixbuf is None:
-            obj = notify2.Notification(PROG, message, icon='library-music')
-        else:
-            obj = notify2.Notification(PROG, message)
-            obj.set_icon_from_pixbuf(pixbuf)
-
+        obj = notify2.Notification(PROG, message)
         obj.set_hint('desktop-entry', PROG)
 
-        if set['id'] is not None:
-            obj.id = set['id']
+        if id is not None:
+            obj.id = id
 
-        if set['timeout'] is not None:
-            obj.set_timeout(set['timeout'])
+        if timeout is not None:
+            obj.set_timeout(timeout)
 
-        if set['urgency'] is not None:
-            obj.set_urgency(set['urgency'])
+        if urgency is not None:
+            obj.set_urgency(urgency)
+
+        if pixbuf is not None:
+            obj.set_icon_from_pixbuf(pixbuf)
+        elif default_image is not None:
+            obj.set_icon_from_pixbuf(default_image)
 
         return obj
 
 
 def notify_user(client):
 
-    if client.currentsong() and 'file' in client.currentsong():
-        song = SongInfo(client.currentsong())
-        message = get_notify_message(song.props)
-        nobject = get_notification(message, song.props['pixbuf'])
+    song = SongInfo(client.currentsong())
+    pprint(song.props)
+    message = get_notify_message(song.props)
+    nobject = get_notification(message, song.props['pixbuf'])
 
-        if nobject is not None and client.currentsong()['id'] == song.id:
-            nobject.show()
+    # if notify object is valid and current song.id still matches current song id
+    if nobject is not None and client.currentsong()['id'] == song.id:
+        nobject.show()
 
 
 def notify_on_event(client):
@@ -621,7 +590,7 @@ def notify_on_event(client):
         songid = client.currentsong()['id']
         state = client.status()['state']
 
-        # if state changes to play or new track starts playing
+        # if state is play and state or song has changed
         if state == 'play' and (prev_state != 'play' or prev_songid != songid):
             notify_user(client)
 
