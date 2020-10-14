@@ -469,7 +469,6 @@ def get_client():
 def get_notify_message(props):
 
     message = None
-
     if 'title' in props:
 
         if len(props['title']) > 36:
@@ -480,7 +479,6 @@ def get_notify_message(props):
             size = 'medium'
 
         message = "<span size='{}'><b>{}</b></span>".format(size, props['title'])
-
         if 'album' in props:
 
             if 'date' in props:
