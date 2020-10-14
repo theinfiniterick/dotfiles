@@ -2,19 +2,18 @@
 
 import argparse
 import configparser
-import os.path
-import re
-import signal
-import sys
-
 import dateutil.parser
-import gi.repository
 import mpd
 import mutagen
 import notify2
+import os.path
+import re
 import requests
-from gi.repository import Gio
+import signal
+import sys
 
+import gi.repository
+from gi.repository import Gio
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository.GdkPixbuf import Pixbuf
 
@@ -71,12 +70,10 @@ class SongInfo:
                 props['album'] = filename_dict['album']
 
         # append pixbuf from embedded data
-        if self.mimetype in ('audio/mpeg', 'audio/mp4', 'audio/x-flac'):
+        pixbuf = self.get_pixbuf_from_embedded()
 
-            pixbuf = self.get_pixbuf_from_embedded()
-
-            if pixbuf is not None:
-                props['pixbuf'] = pixbuf
+        if pixbuf is not None:
+            props['pixbuf'] = pixbuf
 
         # append missing pixbuf from image file
         if 'pixbuf' not in props:
@@ -117,17 +114,16 @@ class SongInfo:
         string = os.path.splitext(self.filename)[0]
 
         regex = re.compile(r'\s+-\s+|(?<=^\d{1})\.\s+|(?<=^\d{2})\.\s+|(?<=\s{1}\d{1})\.\s+|(?<=\s{1}\d{2})\.\s+')
-
         values = regex.split(string)
 
         values = [val.strip() for val in values]
 
         assigned = dict()
 
-        for val in values:
-            if re.match(r'^\d{1,2}$', val):
-                assigned['track'] = val
-                values.remove(val)
+        for value in values:
+            if re.match(r'^\d{1,2}$', value):
+                assigned['track'] = value
+                values.remove(value)
                 break
 
         if len(values) > 3:
@@ -145,6 +141,7 @@ class SongInfo:
     def get_pixbuf_from_embedded(self):
 
         file = mutagen.File(self.path)
+
         data = None
 
         if file.mime[0] == 'audio/mp3':  # mp3
@@ -201,35 +198,35 @@ class SongInfo:
 
         if None not in (artist, album):
             type = 'album'
-            params = {'type': type, 'offset': 0, 'limit': 10}
+            params = {'type': type, 'offset': 0, 'limit': 20}
             url = "https://api.spotify.com/v1/search?q=artist:{} AND album:{}".format(artist, album)
         elif None not in (artist, track):
             type = 'track'
-            params = {'type': type, 'offset': 0, 'limit': 10}
+            params = {'type': type, 'offset': 0, 'limit': 20}
             url = "https://api.spotify.com/v1/search?q=artist:{} AND track:{}".format(artist, track)
 
         if type is not None:
 
             try:
-                api_response = requests.get(url, headers=headers, params=params)
+                response = requests.get(url, headers=headers, params=params)
             except requests.exceptions.ConnectionError:
                 print("error: api connection failed.")
                 return None
 
-            if api_response.status_code != 200:
+            if response.status_code != 200:
                 print("error: api response invalid.")
                 return None
 
-            api_data = api_response.json()
+            response_data = response.json()
 
-            if type == 'album' and api_data['albums']['total'] == 0:
+            if type == 'album' and response_data['albums']['total'] == 0:
                 print("warning: no api results for artist:{}, album:{}.".format(artist, album))
                 return None
-            elif type == 'track' and api_data['tracks']['total'] == 0:
+            elif type == 'track' and response_data['tracks']['total'] == 0:
                 print("warning: no api results for artist:{}, track:{}.".format(artist, track))
                 return None
 
-            return api_data[f'{type}s']['items']
+            return response_data[f'{type}s']['items']
 
     def get_pixbuf_from_url(self, url):
 
@@ -249,35 +246,35 @@ class SongInfo:
 
         if artist is not None and album is not None:
             type = 'album'
-            api_results = self.query_api(artist=artist, album=album)
+            api_data = self.query_api(artist=artist, album=album)
         if artist is not None and track is not None:
             type = 'track'
-            api_results = self.query_api(artist=artist, track=track)
+            api_data = self.query_api(artist=artist, track=track)
 
-        if api_results is None:
+        if api_data is None:
             return None
 
         bad_patterns = re.compile(r'best of|greatest hits|collection|b-sides|classics|live', flags=re.IGNORECASE)
 
         selected_index = 0
 
-        for index in range(len(api_results)):
+        for index in range(len(api_data)):
 
             if type == 'album':
-                album = api_results[index]['name']
+                album = api_data[index]['name']
             elif type == 'track':
-                album = api_results[index]['album']['name']
+                album = api_data[index]['album']['name']
 
             if not bad_patterns.search(album):
                 selected_index = index
                 break
 
-        artist = api_results[selected_index]['artists'][0]['name']
+        artist = api_data[selected_index]['artists'][0]['name']
 
         if type == 'album':
-            selected_record = api_results[selected_index]
+            selected_record = api_data[selected_index]
         elif type == 'track':
-            selected_record = api_results[selected_index]['album']
+            selected_record = api_data[selected_index]['album']
 
         album = selected_record['name']
         date = selected_record['release_date']
@@ -382,7 +379,6 @@ def get_settings():
         except Exception:
             print("error: Spotify API did not return valid data for authorization token.")
         else:
-
             if 'access_token' not in response_data or response_data['access_token'] is None:
                 print("error: Spotify API did not return a valid authorization token.")
             else:
