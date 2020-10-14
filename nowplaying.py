@@ -29,7 +29,6 @@ class SongInfo:
 
         self.path = os.path.join(settings['mpd']['directory'], mpd_dict['file'])
         self.filename = os.path.basename(self.path)
-        self.mimetype = mimetypes.guess_type(self.filename)[0]
 
         self.props = self.get_props(mpd_dict)
 
