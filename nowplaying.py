@@ -2,8 +2,6 @@
 
 import argparse
 import configparser
-import json
-import mimetypes
 import os.path
 import re
 import signal
@@ -19,9 +17,6 @@ from gi.repository import Gio
 
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository.GdkPixbuf import Pixbuf
-
-from pprint import pprint
-
 
 PROG = "nowplaying"
 
@@ -99,10 +94,8 @@ class SongInfo:
                 api_dict = self.get_api_data(artist=props['artist'], album=props['album'])
             elif 'artist' in props and 'title' in props:
                 api_dict = self.get_api_data(artist=props['artist'], track=props['title'])
-            else:
-                api_dict = None
 
-            if api_dict is not None and api_dict.keys() >= {'artist', 'album', 'date', 'pixbuf'}:
+            if api_dict is not None:
                 props['artist'] = api_dict['artist']
                 props['album'] = api_dict['album']
                 props['date'] = api_dict['date']
@@ -124,7 +117,7 @@ class SongInfo:
 
         string = os.path.splitext(self.filename)[0]
 
-        regex = re.compile(r"\s+-\s+|(?<=^\d{1})\.\s+|(?<=^\d{2})\.\s+|(?<=\s{1}\d{1})\.\s+|(?<=\s{1}\d{2})\.\s+")
+        regex = re.compile(r'\s+-\s+|(?<=^\d{1})\.\s+|(?<=^\d{2})\.\s+|(?<=\s{1}\d{1})\.\s+|(?<=\s{1}\d{2})\.\s+')
 
         values = regex.split(string)
 
@@ -152,28 +145,26 @@ class SongInfo:
 
     def get_pixbuf_from_embedded(self):
 
-        if self.mimetype in ('audio/mpeg', 'audio/x-flac', 'audio/mp4'):
+        file = mutagen.File(self.path)
+        data = None
 
-            file = mutagen.File(self.path)
+        if file.mime[0] == 'audio/mp3':  # mp3
+            for tag in file.tags.values():
+                if tag.FrameID == 'APIC' and int(tag.type) == 3:
+                    data = tag.data
+                    break
+        elif file.mime[0] == 'audio/flac':  # flac
+            for tag in file.pictures:
+                if tag.type == 3:
+                    data = tag.data
+                    break
+        elif file.mime[0] == 'audio/mp4':  # m4a
+            if 'covr' in file.tags.keys():
+                data = file.tags['covr'][0]
 
-            image_types = [3, 2, 1, 0, 18]
-
-            if self.mimetype == 'audio/mpeg':  # mp3
-                for type in image_types:
-                    for tag in file.tags.values():
-                        if tag.FrameID == 'APIC' and int(tag.type) == type:
-                            input_stream = Gio.MemoryInputStream.new_from_data(tag.data, None)
-                            return Pixbuf.new_from_stream(input_stream, None)
-            elif self.mimetype == 'audio/x-flac':  # flac
-                for type in image_types:
-                    for tag in file.pictures:
-                        if tag.type == type:
-                            input_stream = Gio.MemoryInputStream.new_from_data(tag.data, None)
-                            return Pixbuf.new_from_stream(input_stream, None)
-            elif self.mimetype == 'audio/mp4':  # m4a
-                if 'covr' in file.tags.keys():
-                    input_stream = Gio.MemoryInputStream.new_from_data(file.tags['covr'][0], None)
-                    return Pixbuf.new_from_stream(input_stream, None)
+        if data is not None:
+            input_stream = Gio.MemoryInputStream.new_from_data(data, None)
+            return Pixbuf.new_from_stream(input_stream, None)
 
     def get_pixbuf_from_file(self):
 
@@ -191,8 +182,10 @@ class SongInfo:
 
         folder = os.path.dirname(self.path)
 
-        while folder not in (settings['mpd']['directory']):
+        folder_pattern = re.compile(rf"^{settings['mpd']['directory']}\S.*$")
 
+        depth = 1
+        while folder_pattern.match(folder) and depth <= 3:
             for name in filenames:
                 for ext in extensions:
                     path = '{}/{}.{}'.format(folder, name, ext)
@@ -200,6 +193,7 @@ class SongInfo:
                         return Pixbuf.new_from_file(path)
 
             folder = os.path.abspath(os.path.join(folder, os.pardir))
+            depth += 1
 
     def query_api(self, artist=None, album=None, track=None):
 
@@ -245,7 +239,6 @@ class SongInfo:
         except requests.exceptions.ConnectionError:
             print("error: album art api connection failed.")
         else:
-
             if response.status_code != 200:
                 print("error: album art api response invalid.")
                 return None
@@ -366,6 +359,7 @@ def get_settings():
                     if len(line_arr) == 2:
                         field = line_arr[0]
                         value = line_arr[1].strip('\"').strip('\'')
+
                         if field == "music_directory" and os.path.isdir(os.path.expanduser(value)):
                             data['directory'] = os.path.expanduser(value)
                         elif field == "bind_to_address" and re.match(r'^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$', value):
@@ -379,16 +373,14 @@ def get_settings():
 
     def get_spotify_token(client_id, client_secret):
 
-        params = {
-            'grant_type': 'client_credentials', 'client_id': client_id, 'client_secret': client_secret
-        }
+        params = {'grant_type': 'client_credentials', 'client_id': client_id, 'client_secret': client_secret}
 
         try:
             response = requests.post('https://accounts.spotify.com/api/token', params)
             response_data = response.json()
         except requests.exceptions.ConnectionError:
             print("error: Could not connect to Spotify API for authorization token.")
-        except json.decoder.JSONDecodeError:
+        except Exception:
             print("error: Spotify API did not return valid data for authorization token.")
         else:
 
@@ -399,23 +391,9 @@ def get_settings():
 
     # declare empty dictionary for data
     data = {
-        'mpd': {
-            'directory': None,
-            'host': None,
-            'port': None,
-            'password': None
-        },
-        'notify': {
-            'default_image': None,
-            'id': None,
-            'timeout': None,
-            'urgency': None
-        },
-        'spotify': {
-            'client_id': None,
-            'client_secret': None,
-            'token': None
-        }
+        'mpd': {'directory': None, 'host': None, 'port': None, 'password': None},
+        'notify': {'default_image': None, 'id': None, 'timeout': None, 'urgency': None},
+        'spotify': {'client_id': None, 'client_secret': None, 'token': None}
     }
 
     # append mpd.conf data
@@ -474,7 +452,7 @@ def get_arguments():
 
 def get_client():
 
-    host, port, password = settings['mpd']['host'], settings['mpd']['port'], settings['mpd']['password']
+    host, port, password = list(settings['mpd'].values())[1:]
 
     obj = mpd.MPDClient()
 
@@ -500,43 +478,43 @@ def get_notify_message(props):
     if 'title' in props:
 
         if len(props['title']) > 36:
-            size = "x-small"
+            size = 'x-small'
         elif len(props['title']) > 30:
-            size = "small"
+            size = 'small'
         else:
-            size = "medium"
+            size = 'medium'
 
-        message = f"<span size='{size}'><b>{props['title']}</b></span>"
+        message = "<span size='{}'><b>{}</b></span>".format(size, props['title'])
 
         if 'album' in props:
 
             if 'date' in props:
-                line_length = len(f"by {props['album']} ({props['date']})")
+                line_length = len("by {} ({})".format(props['album'], props['date']))
             else:
-                line_length = len(f"by {props['album']}")
+                line_length = len("by {}".format(props['album']))
 
             if line_length > 36:
-                size = "x-small"
+                size = 'x-small'
             elif line_length > 30:
-                size = "small"
+                size = 'small'
             else:
-                size = "medium"
+                size = 'medium'
 
             if 'date' in props:
-                message += f"\n<span size='x-small'>on </span><span size='{size}'><b>{props['album']}</b> (<b>{props['date']}</b></span>)"
+                message += "\n<span size='x-small'>on </span><span size='{}'><b>{}</b> (<b>{}</b></span>)".format(size, props['album'], props['date'])
             else:
-                message += f"\n<span size='x-small'>on </span><span size='{size}'><b>{props['album']}</b></span>"
+                message += "\n<span size='x-small'>on </span><span size='{}'><b>{}</b></span>".format(size, props['album'])
 
         if 'artist' in props:
 
             if len(props['artist']) > 36:
-                size = "x-small"
+                size = 'x-small'
             elif len(props['artist']) > 30:
-                size = "small"
+                size = 'small'
             else:
-                size = "medium"
+                size = 'medium'
 
-            message += f"\n<span size='x-small'>by </span><span size='{size}'><b>{props['artist']}</b></span>"
+            message += "\n<span size='x-small'>by </span><span size='{}'><b>{}</b></span>".format(size, props['artist'])
 
     return message
 
@@ -571,7 +549,7 @@ def get_notification(message, pixbuf):
 def notify_user(client):
 
     song = SongInfo(client.currentsong())
-    pprint(song.props)
+    print(str(song.props))
     message = get_notify_message(song.props)
     nobject = get_notification(message, song.props['pixbuf'])
 
