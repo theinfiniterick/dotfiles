@@ -1,7 +1,6 @@
 #!/usr/bin/python
 
 """
-TODO: SongInfo - get_api_data - add exception for invalid token
 TODO: SongInfo - get_api_data - add handling for empty fields
 """
 
@@ -21,7 +20,6 @@ import gi.repository
 from gi.repository import Gio
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository.GdkPixbuf import Pixbuf
-from pprint import pprint as pp
 
 PROG = "nowplaying"
 
@@ -192,10 +190,6 @@ class SongInfo:
             depth += 1
 
     def query_api(self, artist=None, album=None, track=None):
-        """
-        add exception for invalid token
-        add handling for empty fields
-        """
 
         headers = {'Authorization': 'Bearer {}'.format(settings['spotify']['token'])}
         type = None
@@ -223,7 +217,7 @@ class SongInfo:
                 print("warning: api authorization failed.")
                 return 401
             elif response.status_code != 200:
-                print("warning: api response invalid.")
+                print("warning: api response invalid, status code {}.".format(response.status_code))
                 return
 
             response_data = response.json()
@@ -263,6 +257,8 @@ class SongInfo:
         if artist is not None and track is not None:
             type = 'track'
             api_data = self.query_api(artist=artist, track=track)
+        else:
+            return
 
         if api_data == 401:
 
@@ -322,7 +318,7 @@ def get_spotify_token(client_id, client_secret):
         return
 
     if response.status_code != 200:
-        print("warning: api auth response invalid.")
+        print("warning: api auth response invalid, status code {}.".format(response.status_code))
         return
 
     response_data = response.json()
@@ -359,6 +355,9 @@ def get_settings():
                                 print("warning: failed to convert value '{}' to integer for port in mpd.conf.".format(value))
                         elif key == 'password':
                             data['password'] = value
+
+                        if data.keys() >= {'directory', 'host', 'port', 'password'}:
+                            break
 
             return data
 
@@ -448,14 +447,14 @@ def get_settings():
     return merged_data
 
 
-def cancel_process(client, nobject):
+def cancel_process(client, nobj):
 
     # prevent standout output
     sys.stdout.write('\b\b\r')
 
     # close notification object
-    if nobject is not None:
-        nobject.close()
+    if nobj is not None:
+        nobj.close()
 
     # close client object
     if client is not None:
@@ -541,31 +540,29 @@ def get_notify_message(props):
     return message
 
 
-def notify_user(client, nobject):
+def notify_user(client, nobj):
 
     # gather notification data
     song = SongInfo(client.currentsong())
     message = get_notify_message(song.props)
 
-    pp(song.props)
-
     # update notification message
-    nobject.update(PROG, message)
+    nobj.update(PROG, message)
 
     # update notification icon
     if 'pixbuf' in song.props:
-        nobject.set_icon_from_pixbuf(song.props['pixbuf'])
+        nobj.set_icon_from_pixbuf(song.props['pixbuf'])
     elif settings['notify']['default_pixbuf'] is not None:
-        nobject.set_icon_from_pixbuf(settings['notify']['default_pixbuf'])
-    elif 'icon_data' in nobject.hints:
-        del nobject.hints['icon_data']
+        nobj.set_icon_from_pixbuf(settings['notify']['default_pixbuf'])
+    elif 'icon_data' in nobj.hints:
+        del nobj.hints['icon_data']
 
     # if song has not changed, show notification
     if client.currentsong()['id'] == song.id:
-        nobject.show()
+        nobj.show()
 
 
-def notify_on_event(client, nobject):
+def notify_on_event(client, nobj):
 
     prev_songid, prev_state = None, None
 
@@ -575,7 +572,7 @@ def notify_on_event(client, nobject):
         state = client.status()['state']
 
         if state == 'play' and (prev_state != 'play' or prev_songid != currentsong['id']):
-            notify_user(client, nobject)
+            notify_user(client, nobj)
 
         prev_songid, prev_state = currentsong['id'], state
 
@@ -635,8 +632,6 @@ def main():
 
     client.close()
     client.disconnect()
-
-    # nobject.close()
 
 
 if __name__ == "__main__":
