@@ -1,9 +1,5 @@
 #!/usr/bin/python
 
-"""
-TODO: SongInfo - get_api_data - add handling for empty fields
-"""
-
 import argparse
 import configparser
 import dateutil.parser
@@ -29,7 +25,7 @@ class SongInfo:
     def __init__(self, mpd_dict):
 
         self.id = mpd_dict['id']
-        self.path = os.path.join(settings['mpd']['directory'], mpd_dict['file'])
+        self.path = os.path.join(cfg['mpd']['directory'], mpd_dict['file'])
         self.filename = os.path.basename(self.path)
 
         self.props = self.get_props(mpd_dict)
@@ -38,17 +34,6 @@ class SongInfo:
         return "SongInfo('{}')".format(self.filename)
 
     def get_props(self, mpd_dict):
-
-        def _clean_props(props):
-
-            if 'album' in props:
-                regex = re.compile(r'\s?(\(|\[)[^\)]*(version|edition|deluxe|release|remaster|remastered)(\)|\])$', flags=re.IGNORECASE)
-                props['album'] = regex.sub('', props['album'])
-
-            if 'date' in props:
-                props['date'] = dateutil.parser.parse(props['date']).year
-
-            return props
 
         props = dict()
 
@@ -84,11 +69,13 @@ class SongInfo:
                 props['pixbuf'] = pixbuf
 
         # append data and pixbuf from the spotify api
-        if settings['spotify']['token'] is not None and ('album' not in props or 'pixbuf' not in props):
+        if not props.keys() > {'album', 'pixbuf'} and 'artist' in props and cfg['spotify']['token'] is not None:
 
-            if 'artist' in props and 'album' in props:
+            api_dict = None
+
+            if 'album' in props:
                 api_dict = self.get_api_data(artist=props['artist'], album=props['album'])
-            elif 'artist' in props and 'title' in props:
+            elif 'title' in props:
                 api_dict = self.get_api_data(artist=props['artist'], track=props['title'])
 
             if api_dict is not None:
@@ -97,19 +84,33 @@ class SongInfo:
                 props['date'] = api_dict['date']
                 props['pixbuf'] = api_dict['pixbuf']
 
-        # clean album and date values
-        props = _clean_props(props)
+        # remove unwanted substrings from album
+        if 'album' in props:
+
+            regex_list = [
+                r'\s?(\(|\[)(.*)?(Edition|Extended|Expanded|Remaster|Remastered|Deluxe|Special|Bonus|Box Set|Distribution)(.*)?(\)|\])$',
+                r'\s?(\(|\[)(Live|Bootleg|Demo|Music From The Motion Picture Soundtrack)(\)|\])$',
+                r'(:\s+|\s+-\s+|\(|\[)(.*)?(Edition|Remaster|Anniversary|Box Set)(\)|\])?$'
+            ]
+
+            regex = re.compile(r'\s?(\(|\[)(.*)?(Edition|Extended|Expanded|Remaster|Remastered|Deluxe|Special|Bonus|Box Set|Distribution)(.*)?(\)|\])$|\s?(\(|\[)(Live|Bootleg|Demo|Music From The Motion Picture Soundtrack)(\)|\])$|(:\s+|\s+-\s+|\(|\[)(.*)?(Edition|Remaster|Anniversary|Box Set)(\)|\])?$')
+            props['album'] = regex.sub('', props['album'])
+
+        # trim date string down to year
+        if 'date' in props:
+            try:
+                props['date'] = dateutil.parser.parse(props['date']).year
+            except dateutil.parser._parser.ParserError:
+                pass
 
         return props
 
     def get_filename_dict(self):
 
         string = os.path.splitext(self.filename)[0]
-
         regex = re.compile(r'\s+-\s+|(?<=^\d{1})\.\s+|(?<=^\d{2})\.\s+|(?<=\s{1}\d{1})\.\s+|(?<=\s{1}\d{2})\.\s+')
-        values = regex.split(string)
 
-        values = [value.strip() for value in values]
+        values = [value.strip() for value in regex.split(string)]
 
         assigned = dict()
 
@@ -153,11 +154,11 @@ class SongInfo:
 
         if data is not None:
             try:
-                print("info: embedded image data found.")
+                print("info: embedded image found.")
                 input_stream = Gio.MemoryInputStream.new_from_data(data, None)
                 return Pixbuf.new_from_stream(input_stream, None)
             except TypeError:
-                print("warning: embedded image data not valid.")
+                print("warning: embedded image not valid.")
 
     def get_pixbuf_from_file(self):
 
@@ -173,39 +174,51 @@ class SongInfo:
             'bmp', 'tif', 'tiff', 'svg'
         ]
 
+        folder_pattern = re.compile(r'^{}\/.*$'.format(cfg['mpd']['directory']))
+
         folder = os.path.dirname(self.path)
+        searched = 0
 
-        folder_pattern = re.compile(rf"^{settings['mpd']['directory']}\S.*$")
-
-        depth = 1
-        while folder_pattern.match(folder) and depth <= 3:
+        while folder_pattern.match(folder) and searched <= 2:
             for name in filenames:
                 for ext in extensions:
                     path = '{}/{}.{}'.format(folder, name, ext)
                     if os.path.isfile(path):
-                        print("info: found local image file '{}'".format(path))
-                        return Pixbuf.new_from_file(path)
+                        print("info: image file '{}'".format(path))
+                        try:
+                            return Pixbuf.new_from_file(path)
+                        except gi.repository.GLib.Error:
+                            print("warning: image file not valid.")
 
             folder = os.path.abspath(os.path.join(folder, os.pardir))
-            depth += 1
+            searched += 1
 
-    def query_api(self, artist=None, album=None, track=None):
+    def get_api_data(self, artist=None, album=None, track=None):
 
-        headers = {'Authorization': 'Bearer {}'.format(settings['spotify']['token'])}
-        type = None
+        def query_api(artist, album=None, track=None):
 
-        if None not in (artist, album):
-            print("info: querying api for artist:'{}', album:'{}'.".format(artist, album))
-            type = 'album'
-            params = {'type': type, 'offset': 0, 'limit': 20}
-            url = "https://api.spotify.com/v1/search?q=artist:{} AND album:{}".format(artist, album)
-        elif None not in (artist, track):
-            print("info: querying api for artist:'{}', track:'{}'.".format(artist, track))
-            type = 'track'
-            params = {'type': type, 'offset': 0, 'limit': 20}
-            url = "https://api.spotify.com/v1/search?q=artist:{} AND track:{}".format(artist, track)
+            headers = {'Authorization': 'Bearer {}'.format(cfg['spotify']['token'])}
 
-        if type is not None:
+            if album is not None:
+
+                type = 'album'
+                params = {'type': type, 'offset': 0, 'limit': 20}
+                query_artist = re.sub(r'\'|\s+\(?(feat|ft|with)\.?\s+.*\)?$', '', artist)
+                query_album = re.sub('\'', '', album)
+                query = "artist:{} AND album:{}".format(query_artist, query_album)
+
+            elif track is not None:
+
+                type = 'track'
+                params = {'type': type, 'offset': 0, 'limit': 20}
+                query_artist = re.sub(r'\'|\s+\(?(feat|ft|with)\.?\s+.*\)?$', '', artist)
+                query_track = re.sub(r'\'|!|\s+\(?(feat|ft|with)\.?\s+.*\)?$|\s?\(Alt\. Version\)$', '', track)
+                query = "artist:{} AND track:{}".format(query_artist, query_track)
+
+            else:
+                return
+
+            url = "https://api.spotify.com/v1/search?q={}".format(requests.utils.quote(query))
 
             try:
                 response = requests.get(url, headers=headers, params=params)
@@ -226,72 +239,81 @@ class SongInfo:
                 print("warning: no api results for artist:{}, album:{}.".format(artist, album))
                 return
             elif type == 'track' and response_data['tracks']['total'] == 0:
+                print(url)
                 print("warning: no api results for artist:{}, track:{}.".format(artist, track))
                 return
 
-            return response_data[f'{type}s']['items']
+            return response_data['{}s'.format(type)]['items']
 
-    def get_pixbuf_from_url(self, url):
+        def get_pixbuf_from_url(url):
 
-        try:
-            response = requests.get(url)
-        except requests.exceptions.ConnectionError:
-            print("warning: album art api connection failed.")
-            return
+            try:
+                response = requests.get(url)
+            except requests.exceptions.ConnectionError:
+                print("warning: album art api connection failed.")
+                return
 
-        if response.status_code != 200:
-            print("warning: album art api response invalid.")
-            return
+            if response.status_code != 200:
+                print("warning: album art api response invalid.")
+                return
 
-        try:
-            input_stream = Gio.MemoryInputStream.new_from_data(response.content, None)
-            return Pixbuf.new_from_stream(input_stream, None)
-        except TypeError:
-            print("warning: spotify image data not valid.")
-
-    def get_api_data(self, artist=None, album=None, track=None):
+            try:
+                input_stream = Gio.MemoryInputStream.new_from_data(response.content, None)
+                return Pixbuf.new_from_stream(input_stream, None)
+            except TypeError:
+                print("warning: spotify image data not valid.")
 
         if artist is not None and album is not None:
             type = 'album'
-            api_data = self.query_api(artist=artist, album=album)
-        if artist is not None and track is not None:
+            api_data = query_api(artist=artist, album=album)
+        elif artist is not None and track is not None:
             type = 'track'
-            api_data = self.query_api(artist=artist, track=track)
+            api_data = query_api(artist=artist, track=track)
         else:
             return
 
         if api_data == 401:
 
-            global settings
-            settings['spotify']['token'] = get_spotify_token(settings['spotify']['client_id'], settings['spotify']['client_secret'])
+            global cfg
+            cfg['spotify']['token'] = get_spotify_token(cfg['spotify']['client_id'], cfg['spotify']['client_secret'])
 
             if type == 'album':
-                api_data = self.query_api(artist=artist, album=album)
+                api_data = query_api(artist=artist, album=album)
             if type == 'track':
-                api_data = self.query_api(artist=artist, track=track)
+                api_data = query_api(artist=artist, track=track)
 
-        if api_data == 401:
-            settings['notify']['client_id'] = None
-            settings['notify']['client_secret'] = None
+            if api_data == 401:
+                cfg['spotify']['client_id'] = None
+                cfg['spotify']['client_secret'] = None
+                cfg['spotify']['token'] = None
+                api_data = None
 
-        if api_data is None or api_data == 401:
+        if api_data is None:
             return
 
-        bad_patterns = re.compile(r'best of|greatest hits|collection|b-sides|classics|live', flags=re.IGNORECASE)
+        bad_patterns = re.compile(r'^the karaoke channel -\s?|^karaoke -\s?|^live in|best of|live anthology|^hits|hits$|^rhino hi-five:|greatest hits|ultimate hits|super hits|collection|b-sides|singles|classics|essential|live$|tribute|\'?80s|\'?90s|(\s|^)?\'?00s|80\'s|90\'s|00\'s', flags=re.IGNORECASE)
         selected_index = 0
 
         for index in range(len(api_data)):
 
             if type == 'album':
+                album_type = api_data[index]['type']
                 album = api_data[index]['name']
             elif type == 'track':
+                album_type = api_data[index]['album']['type']
                 album = api_data[index]['album']['name']
 
-            if not bad_patterns.search(album):
+            if not bad_patterns.search(album) and album_type == "album":
                 selected_index = index
                 break
+            else:
+                print("skipping:", album)
 
-        artist = api_data[selected_index]['artists'][0]['name']
+        if len(api_data[selected_index]['artists']) > 1:
+            # artist = api_data[selected_index]['artists'][0]['name'] + " & " + api_data[selected_index]['artists'][1]['name']
+            pass
+        else:
+            artist = api_data[selected_index]['artists'][0]['name']
 
         if type == 'album':
             selected_record = api_data[selected_index]
@@ -302,7 +324,7 @@ class SongInfo:
         date = selected_record['release_date']
         image = selected_record['images'][0]['url']
 
-        pixbuf = self.get_pixbuf_from_url(image)
+        pixbuf = get_pixbuf_from_url(image)
 
         return {'artist': artist, 'album': album, 'date': date, 'pixbuf': pixbuf}
 
@@ -330,7 +352,7 @@ def get_spotify_token(client_id, client_secret):
     return response_data['access_token']
 
 
-def get_settings():
+def get_config():
 
     def get_mpdconf_data():
 
@@ -398,7 +420,7 @@ def get_settings():
                                 try:
                                     data[section][key] = int(value)
                                 except ValueError:
-                                    print("warning: failed to convert field config['{}']['{}'] value '{}' to integer.".format(section, key, value))
+                                    print("warning: failed to convert field cfg['{}']['{}'] value '{}' to integer.".format(section, key, value))
                             else:
                                 data[section][key] = value
 
@@ -407,7 +429,7 @@ def get_settings():
 
         return data
 
-    # create empty dictionary for settings data
+    # create empty dictionary for config data
     merged_data = {
         'mpd': {'directory': None, 'host': None, 'port': None, 'password': None},
         'notify': {'default_image': None, 'default_pixbuf': None, 'id': None, 'timeout': None, 'urgency': None},
@@ -440,40 +462,39 @@ def get_settings():
     # append spotify authorization token to data
     if merged_data['spotify']['client_id'] is not None and merged_data['spotify']['client_secret'] is not None:
         merged_data['spotify']['token'] = get_spotify_token(merged_data['spotify']['client_id'], merged_data['spotify']['client_secret'])
-        print("info: spotify token: {}".format(merged_data['spotify']['token']))
+        print("info: spotify token '{}'".format(merged_data['spotify']['token']))
     else:
         print("warning: no spotify token.")
 
     return merged_data
 
 
-def cancel_process(client, nobj):
+def cancel_process(client=None, nobj=None):
 
-    # prevent standout output
     sys.stdout.write('\b\b\r')
 
-    # close notification object
-    if nobj is not None:
-        nobj.close()
+    print("Quitting..")
 
-    # close client object
     if client is not None:
         client.close()
 
-    sys.exit("goodbye!")
+    if nobj is not None:
+        nobj.close()
+
+    sys.exit(0)
 
 
 def get_arguments():
 
-    parser = argparse.ArgumentParser(prog=PROG, usage="%(prog)s [options]", description="Send notification for current MPD track.", prefix_chars='-')
-    parser.add_argument("--once", "-o", action="store_true", default=False, help="Send one notification and exit")
+    parser = argparse.ArgumentParser(prog=PROG, usage="%(prog)s [options]", description="Send notifications when MPD track changes.", prefix_chars='-')
+    parser.add_argument("-n", "--now", action="store_true", default=False, help="Send a notification for current track immediately and exit.")
 
     return parser.parse_args()
 
 
 def get_client():
 
-    host, port, password = list(settings['mpd'].values())[1:]
+    host, port, password = list(cfg['mpd'].values())[1:4]
 
     obj = mpd.MPDClient()
 
@@ -492,15 +513,46 @@ def get_client():
     return obj
 
 
+def get_notification():
+
+    try:
+        notify2.init(PROG)
+    except Exception:
+        sys.exit("error: cannot create notification.")
+
+    obj = notify2.Notification(PROG, "Starting MPD Notifications..")
+
+    obj.set_hint('desktop-entry', PROG)
+
+    if cfg['notify']['default_pixbuf'] is not None:
+        obj.set_icon_from_pixbuf(cfg['notify']['default_pixbuf'])
+
+    id, timeout, urgency = list(cfg['notify'].values())[2:]
+
+    if id is not None:
+        obj.id = id
+
+    if timeout is not None:
+        obj.set_timeout(timeout)
+
+    if urgency is not None:
+        obj.set_urgency(urgency)
+
+    obj.show()
+
+    if 'icon_data' in obj.hints:
+        del obj.hints['icon_data']
+
+    return obj
+
+
 def get_notify_message(props):
 
     message = None
 
     if 'title' in props:
 
-        if len(props['title']) > 36:
-            size = 'x-small'
-        elif len(props['title']) > 30:
+        if len(props['title']) > 30:
             size = 'small'
         else:
             size = 'medium'
@@ -510,13 +562,11 @@ def get_notify_message(props):
         if 'album' in props:
 
             if 'date' in props:
-                line_length = len("by {} ({})".format(props['album'], props['date']))
+                line_length = len("on {} ({})".format(props['album'], props['date']))
             else:
-                line_length = len("by {}".format(props['album']))
+                line_length = len("on {}".format(props['album']))
 
-            if line_length > 36:
-                size = 'x-small'
-            elif line_length > 30:
+            if line_length > 30:
                 size = 'small'
             else:
                 size = 'medium'
@@ -528,9 +578,9 @@ def get_notify_message(props):
 
         if 'artist' in props:
 
-            if len(props['artist']) > 36:
-                size = 'x-small'
-            elif len(props['artist']) > 30:
+            line_length = len("by {}".format(props['artist']))
+
+            if line_length > 30:
                 size = 'small'
             else:
                 size = 'medium'
@@ -552,8 +602,8 @@ def notify_user(client, nobj):
     # update notification icon
     if 'pixbuf' in song.props:
         nobj.set_icon_from_pixbuf(song.props['pixbuf'])
-    elif settings['notify']['default_pixbuf'] is not None:
-        nobj.set_icon_from_pixbuf(settings['notify']['default_pixbuf'])
+    elif cfg['notify']['default_pixbuf'] is not None:
+        nobj.set_icon_from_pixbuf(cfg['notify']['default_pixbuf'])
     elif 'icon_data' in nobj.hints:
         del nobj.hints['icon_data']
 
@@ -568,69 +618,35 @@ def notify_on_event(client, nobj):
 
     while client.idle('player'):
 
-        currentsong = client.currentsong()
-        state = client.status()['state']
+        songid, state = client.currentsong()['id'], client.status()['state']
 
-        if state == 'play' and (prev_state != 'play' or prev_songid != currentsong['id']):
+        if state == 'play' and (prev_state != 'play' or prev_songid != songid):
             notify_user(client, nobj)
 
-        prev_songid, prev_state = currentsong['id'], state
-
-
-def get_notification_object():
-
-    try:
-        notify2.init(PROG)
-    except Exception:
-        sys.exit("error: cannot create notification.")
-
-    obj = notify2.Notification(PROG, "Starting MPD Notifications..")
-
-    obj.set_hint('desktop-entry', PROG)
-
-    if settings['notify']['default_pixbuf'] is not None:
-        obj.set_icon_from_pixbuf(settings['notify']['default_pixbuf'])
-
-    id, timeout, urgency = list(settings['notify'].values())[2:]
-
-    if id is not None:
-        obj.id = id
-
-    if timeout is not None:
-        obj.set_timeout(timeout)
-
-    if urgency is not None:
-        obj.set_urgency(urgency)
-
-    obj.show()
-
-    if 'icon_data' in obj.hints:
-        del obj.hints['icon_data']
-
-    return obj
+        prev_songid, prev_state = songid, state
 
 
 def main():
 
-    client = None
-    nobj = None
+    client, nobj = None, None
 
     signal.signal(signal.SIGINT, lambda x, y: cancel_process(client, nobj))
     signal.signal(signal.SIGTERM, lambda x, y: cancel_process(client, nobj))
 
-    global settings
-    settings = get_settings()
-    arguments = get_arguments()
+    args = get_arguments()
+
+    global cfg
+    cfg = get_config()
 
     client = get_client()
-    nobj = get_notification_object()
+    nobj = get_notification()
 
-    if arguments.once:
+    if args.now:
         notify_user(client, nobj)
+        client.close()
     else:
         notify_on_event(client, nobj)
 
-    client.close()
     client.disconnect()
 
 
