@@ -1,0 +1,1 @@
+pip install notify2 pyacoustid Pillow tinytag configparser
